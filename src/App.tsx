@@ -17,11 +17,13 @@ import {
 
 const inputClass =
   'rounded-apple border border-border-default bg-surface-base px-3 py-1.5 text-[14px] text-ink-body tabular-nums'
+const editorInputClass =
+  'rounded-apple border border-border-default bg-surface-base px-2.5 py-1 text-[13px] text-ink-body tabular-nums'
 
 const KIND_LABELS: Record<EnvelopeKind, string> = {
-  percentNet: '% of take-home',
-  percentGross: '% of gross',
-  fixedPerCheck: '$ per check',
+  percentNet: '% net',
+  percentGross: '% gross',
+  fixedPerCheck: '$ fixed',
 }
 
 /* Categorical palette validated with the dataviz skill's checker (CVD-safe in
@@ -36,7 +38,9 @@ const ENTITY_SLOTS: Record<string, number> = {
   roth: 5,
 }
 const FUNDS_SLOT = 6
-const LEFTOVER_COLOR = '#fff0f3'
+/* Neutral by design — "unallocated" is not a series; validated visible on the
+   tint surface and CVD-distinct from both donut neighbors. */
+const LEFTOVER_COLOR = '#898781'
 
 type Slice = { id: string; label: string; amount: number; color: string }
 
@@ -113,13 +117,7 @@ function Donut({ slices, centerLabel, centerValue }: { slices: Slice[]; centerLa
             onMouseEnter={() => setHovered(slice)}
             onMouseLeave={() => setHovered(null)}
           >
-            <span
-              className="size-2 shrink-0 rounded-full"
-              style={{
-                background: slice.color,
-                boxShadow: slice.id === 'leftover' ? 'inset 0 0 0 1px #e8d0d6' : undefined,
-              }}
-            />
+            <span className="size-2 shrink-0 rounded-full" style={{ background: slice.color }} />
             <span className="truncate text-ink-body">{slice.label}</span>
             <span className="ml-auto tabular-nums text-ink-caption">{currency(slice.amount)}</span>
           </li>
@@ -404,36 +402,47 @@ function App() {
             <summary className="cursor-pointer text-[14px] font-medium text-ink-heading">Envelopes</summary>
             <div className="mt-3 space-y-3">
               {envelopes.map((env) => (
-                <div key={env.id} className="flex flex-wrap items-center gap-2">
-                  <input
-                    type="text"
-                    aria-label="Envelope name"
-                    value={env.name}
-                    onChange={(e) => updateEnvelope(env.id, { name: e.target.value })}
-                    className={`${inputClass} w-32 min-w-0 flex-1`}
-                  />
-                  <select
-                    aria-label={`${env.name} rule type`}
-                    value={env.kind}
-                    onChange={(e) => updateEnvelope(env.id, { kind: e.target.value as EnvelopeKind })}
-                    className={`${inputClass} w-36`}
-                  >
-                    {Object.entries(KIND_LABELS).map(([kind, label]) => (
-                      <option key={kind} value={kind}>
-                        {label}
-                      </option>
-                    ))}
-                  </select>
-                  <input
-                    type="number"
-                    min="0"
-                    aria-label={`${env.name} value`}
-                    value={env.value}
-                    onChange={(e) => updateEnvelope(env.id, { value: num(e.target.value) })}
-                    className={`${inputClass} w-16`}
-                  />
-                  <label className="flex items-center gap-1 text-[11px] text-ink-caption">
-                    {env.remaining !== null ? 'left' : 'bal'}
+                <div key={env.id} className="border-b border-border-default pb-3 last:border-b-0 last:pb-0">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      aria-label="Envelope name"
+                      value={env.name}
+                      onChange={(e) => updateEnvelope(env.id, { name: e.target.value })}
+                      className={`${editorInputClass} min-w-0 flex-1`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setEnvelopes(envelopes.filter((e) => e.id !== env.id))}
+                      className="shrink-0 text-[12px] text-ink-rose hover:text-accent"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                  <div className="mt-1.5 flex items-center gap-2">
+                    <select
+                      aria-label={`${env.name} rule type`}
+                      value={env.kind}
+                      onChange={(e) => updateEnvelope(env.id, { kind: e.target.value as EnvelopeKind })}
+                      className={`${editorInputClass} w-24 shrink-0`}
+                    >
+                      {Object.entries(KIND_LABELS).map(([kind, label]) => (
+                        <option key={kind} value={kind}>
+                          {label}
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      type="number"
+                      min="0"
+                      aria-label={`${env.name} value`}
+                      value={env.value}
+                      onChange={(e) => updateEnvelope(env.id, { value: num(e.target.value) })}
+                      className={`${editorInputClass} w-14 shrink-0`}
+                    />
+                    <span className="ml-auto text-[11px] text-ink-caption">
+                      {env.remaining !== null ? 'left to pay' : 'balance'}
+                    </span>
                     <input
                       type="number"
                       aria-label={`${env.name} ${env.remaining !== null ? 'remaining' : 'balance'}`}
@@ -443,16 +452,9 @@ function App() {
                           ? updateEnvelope(env.id, { remaining: num(e.target.value) })
                           : updateEnvelope(env.id, { balance: num(e.target.value) })
                       }
-                      className={`${inputClass} w-24`}
+                      className={`${editorInputClass} w-24 shrink-0`}
                     />
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => setEnvelopes(envelopes.filter((e) => e.id !== env.id))}
-                    className="text-[12px] text-ink-rose hover:text-accent"
-                  >
-                    Remove
-                  </button>
+                  </div>
                 </div>
               ))}
               <button
@@ -488,22 +490,24 @@ function App() {
               <ProfileRow label="Checks / month" value={profile.checksPerMonth} onChange={(v) => setProfile({ ...profile, checksPerMonth: v })} />
               <ProfileRow label="HYSA APY (%)" value={profile.hysaApy} onChange={(v) => setProfile({ ...profile, hysaApy: v })} />
               <ProfileRow label="HYSA interest to date ($)" value={profile.hysaInterestToDate} onChange={(v) => setProfile({ ...profile, hysaInterestToDate: v })} />
-              <div className="border-t border-border-default pt-3">
+              <div className="space-y-3 border-t border-border-default pt-3">
                 {funds.map((fund) => (
-                  <div key={fund.id} className="mb-2 flex flex-wrap items-center gap-2">
-                    <span className="w-28 truncate text-[12px] text-ink-body">{fund.name}</span>
-                    <label className="flex items-center gap-1 text-[11px] text-ink-caption">
-                      saved
-                      <input type="number" min="0" aria-label={`${fund.name} current`} value={Math.round(fund.current * 100) / 100} onChange={(e) => updateFund(fund.id, { current: num(e.target.value) })} className={`${inputClass} w-20`} />
-                    </label>
-                    <label className="flex items-center gap-1 text-[11px] text-ink-caption">
-                      target
-                      <input type="number" min="0" aria-label={`${fund.name} target`} value={fund.target ?? 0} onChange={(e) => updateFund(fund.id, { target: num(e.target.value) || null })} className={`${inputClass} w-20`} />
-                    </label>
-                    <label className="flex items-center gap-1 text-[11px] text-ink-caption">
-                      $/check
-                      <input type="number" min="0" aria-label={`${fund.name} per-check contribution`} value={fund.perCheck} onChange={(e) => updateFund(fund.id, { perCheck: num(e.target.value) })} className={`${inputClass} w-16`} />
-                    </label>
+                  <div key={fund.id}>
+                    <p className="text-[12px] text-ink-body">{fund.name}</p>
+                    <div className="mt-1 flex items-center gap-2">
+                      <label className="flex items-center gap-1 text-[11px] text-ink-caption">
+                        saved
+                        <input type="number" min="0" aria-label={`${fund.name} current`} value={Math.round(fund.current * 100) / 100} onChange={(e) => updateFund(fund.id, { current: num(e.target.value) })} className={`${editorInputClass} w-20`} />
+                      </label>
+                      <label className="flex items-center gap-1 text-[11px] text-ink-caption">
+                        target
+                        <input type="number" min="0" aria-label={`${fund.name} target`} value={fund.target ?? 0} onChange={(e) => updateFund(fund.id, { target: num(e.target.value) || null })} className={`${editorInputClass} w-20`} />
+                      </label>
+                      <label className="flex items-center gap-1 text-[11px] text-ink-caption">
+                        $/chk
+                        <input type="number" min="0" aria-label={`${fund.name} per-check contribution`} value={fund.perCheck} onChange={(e) => updateFund(fund.id, { perCheck: num(e.target.value) })} className={`${editorInputClass} w-16`} />
+                      </label>
+                    </div>
                   </div>
                 ))}
               </div>
