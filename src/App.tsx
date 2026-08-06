@@ -99,20 +99,22 @@ function Donut({ slices, centerLabel, centerValue }: { slices: Slice[]; centerLa
   /* Tapping a slice on touch pins the readout, since there's no hover. */
   const toggle = (slice: Slice) => setHovered((cur) => (cur?.id === slice.id ? null : slice))
   return (
-    <div className="flex flex-col items-center gap-4 sm:flex-row sm:items-center sm:gap-5">
+    /* Side by side while the panel is full width, stacked again at lg where
+       the panel narrows to 5 columns — that's what lets both grow. */
+    <div className="flex flex-col items-center gap-5 sm:flex-row sm:items-center lg:flex-col lg:gap-4">
       <svg
         viewBox="0 0 176 176"
         role="img"
         aria-label="Paycheck split"
-        className="w-40 shrink-0 sm:w-44"
+        className="w-52 shrink-0 sm:w-56 lg:w-64"
       >
         {arcs.map(({ slice, a0, a1 }) => (
           <path
             key={slice.id}
-            d={arcPath(88, 88, 62, a0, a1)}
+            d={arcPath(88, 88, 61, a0, a1)}
             fill="none"
             stroke={slice.color}
-            strokeWidth={hovered?.id === slice.id ? 30 : 24}
+            strokeWidth={hovered?.id === slice.id ? 34 : 27}
             strokeLinecap="butt"
             onMouseEnter={() => setHovered(slice)}
             onMouseLeave={() => setHovered(null)}
@@ -121,27 +123,35 @@ function Donut({ slices, centerLabel, centerValue }: { slices: Slice[]; centerLa
             <title>{`${slice.label}: ${currency(slice.amount)}`}</title>
           </path>
         ))}
-        <text x="88" y="83" textAnchor="middle" className="fill-ink-caption" fontSize="10" fontWeight="300">
+        <text x="88" y="82" textAnchor="middle" className="fill-ink-caption" fontSize="9.5" fontWeight="300">
           {shown ? shown.label : centerLabel}
         </text>
-        <text x="88" y="100" textAnchor="middle" className="fill-ink-heading" fontSize="15" fontWeight="600">
+        <text x="88" y="99" textAnchor="middle" className="fill-ink-heading" fontSize="15" fontWeight="600">
           {shown ? currency(shown.amount) : centerValue}
         </text>
       </svg>
-      <ul className="grid w-full flex-1 grid-cols-1 gap-1">
-        {slices.map((slice) => (
-          <li
-            key={slice.id}
-            className="flex items-center gap-2 py-0.5 text-[13px] sm:text-[12px]"
-            onMouseEnter={() => setHovered(slice)}
-            onMouseLeave={() => setHovered(null)}
-            onClick={() => toggle(slice)}
-          >
-            <span className="size-2 shrink-0 rounded-full" style={{ background: slice.color }} />
-            <span className="truncate text-ink-body">{slice.label}</span>
-            <span className="ml-auto tabular-nums text-ink-caption">{currency(slice.amount)}</span>
-          </li>
-        ))}
+      <ul className="w-full flex-1 space-y-0.5">
+        {slices.map((slice) => {
+          const pct = total > 0 ? (slice.amount / total) * 100 : 0
+          return (
+            <li
+              key={slice.id}
+              className={`flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-[14px] sm:text-[13px] ${
+                hovered?.id === slice.id ? 'bg-surface-tint' : ''
+              }`}
+              onMouseEnter={() => setHovered(slice)}
+              onMouseLeave={() => setHovered(null)}
+              onClick={() => toggle(slice)}
+            >
+              <span className="size-2.5 shrink-0 rounded-full" style={{ background: slice.color }} />
+              <span className="min-w-0 flex-1 truncate text-ink-body">{slice.label}</span>
+              <span className="shrink-0 tabular-nums text-ink-body">{currency(slice.amount)}</span>
+              <span className="w-9 shrink-0 text-right tabular-nums text-ink-caption">
+                {pct < 1 && pct > 0 ? '<1' : Math.round(pct)}%
+              </span>
+            </li>
+          )
+        })}
       </ul>
     </div>
   )
