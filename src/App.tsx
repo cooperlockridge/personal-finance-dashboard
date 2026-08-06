@@ -13,42 +13,62 @@ const sampleTransactions = [
 
 function App() {
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-4">
-          <h1 className="text-lg font-semibold">Finance Dashboard</h1>
-          <span className="text-sm text-slate-500">August 2026</span>
+    <div className="min-h-dvh bg-surface-base text-ink-body">
+      <header className="border-b border-border-default">
+        <div className="mx-auto flex max-w-5xl items-center justify-between px-8 py-3">
+          <span className="text-[16px] font-medium text-ink-heading">Finance</span>
+          <button
+            type="button"
+            className="rounded-apple bg-accent px-5 py-2 text-[14px] font-medium text-white hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Add Transaction
+          </button>
         </div>
       </header>
 
-      <main className="mx-auto max-w-5xl space-y-8 px-6 py-8">
+      <main className="mx-auto max-w-5xl space-y-8 px-8 py-12">
+        <div>
+          <h1 className="text-[51px] font-bold text-balance text-ink-heading">Dashboard</h1>
+          <p className="text-[16px] text-pretty text-ink-caption">August 2026</p>
+        </div>
+
         <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {summary.map((card) => (
-            <div key={card.label} className="rounded-xl border border-slate-200 bg-white p-5">
-              <p className="text-sm text-slate-500">{card.label}</p>
-              <p className="mt-1 text-2xl font-semibold">{card.value}</p>
-              <p className="mt-1 text-xs text-slate-400">{card.note}</p>
+            <div
+              key={card.label}
+              className="rounded-apple border border-border-default bg-surface-base p-5"
+            >
+              <p className="text-[14px] text-ink-caption">{card.label}</p>
+              <p className="mt-2 text-[27px] font-medium tabular-nums text-ink-body">
+                {card.value}
+              </p>
+              <p className="mt-1 text-[12px] font-light text-ink-caption">{card.note}</p>
             </div>
           ))}
         </section>
 
-        <section className="rounded-xl border border-slate-200 bg-white">
-          <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-            <h2 className="font-medium">Recent Transactions</h2>
-            <span className="text-xs text-slate-400">Sample data</span>
+        <section className="rounded-apple border border-border-default">
+          <div className="flex items-center justify-between border-b border-border-default px-6 py-4">
+            <h2 className="text-[16px] font-medium text-ink-heading">Recent Transactions</h2>
+            <span className="text-[11px] font-light text-ink-caption">Sample data</span>
           </div>
-          <ul className="divide-y divide-slate-100">
-            {sampleTransactions.map((tx) => (
-              <li key={tx.date + tx.name} className="flex items-center justify-between px-5 py-3">
+          <ul>
+            {sampleTransactions.map((tx, i) => (
+              <li
+                key={tx.date + tx.name}
+                className={`group flex items-center justify-between px-6 py-3 hover:bg-surface-raised ${
+                  i > 0 ? 'border-t border-border-default' : ''
+                }`}
+              >
                 <div>
-                  <p className="text-sm font-medium">{tx.name}</p>
-                  <p className="text-xs text-slate-400">
+                  <p className="text-[15px] text-ink-body group-hover:text-white">{tx.name}</p>
+                  <p className="text-[12px] font-light text-ink-caption group-hover:text-ink-tertiary">
                     {tx.date} · {tx.category}
                   </p>
                 </div>
                 <span
-                  className={`text-sm font-medium ${
-                    tx.amount.startsWith('+') ? 'text-emerald-600' : 'text-slate-700'
+                  className={`text-[15px] tabular-nums group-hover:text-white ${
+                    tx.amount.startsWith('+') ? 'font-medium text-accent' : 'text-ink-body'
                   }`}
                 >
                   {tx.amount}
@@ -58,8 +78,10 @@ function App() {
           </ul>
         </section>
 
-        <section className="rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-400">
-          Budgets, charts, and account syncing coming soon
+        <section className="rounded-apple border border-dashed border-border-default p-8 text-center">
+          <p className="text-[14px] text-pretty text-ink-caption">
+            Budgets, charts, and account syncing coming soon
+          </p>
         </section>
       </main>
     </div>
