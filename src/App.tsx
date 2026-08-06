@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   DEFAULT_ENVELOPES,
   DEFAULT_FUNDS,
@@ -7,7 +7,7 @@ import {
   currency,
   grossForCheck,
   learnedWithholding,
-  neededPerWeek,
+  neededPerCheck,
   usePersistentState,
   type Envelope,
   type EnvelopeKind,
@@ -137,6 +137,30 @@ function App() {
   const [dateInput, setDateInput] = useState(() => new Date().toISOString().slice(0, 10))
   const [formError, setFormError] = useState('')
   const [removingId, setRemovingId] = useState<string | null>(null)
+
+  /* One-time data migration (Aug 6, 2026): the Envelope Challenge's $613
+     moved into General (+313) and Wedding (+300); Laken Craft was never a
+     fund (it's her name on the spreadsheet). Idempotent — guarded on the
+     old records still existing. */
+  useEffect(() => {
+    if (envelopes.some((e) => e.id === 'challenge')) {
+      setEnvelopes(
+        envelopes
+          .filter((e) => e.id !== 'challenge')
+          .map((e) =>
+            e.id === 'general'
+              ? { ...e, balance: e.balance + 313 }
+              : e.id === 'wedding'
+                ? { ...e, balance: e.balance + 300 }
+                : e,
+          ),
+      )
+    }
+    if (funds.some((f) => f.id === 'craft')) {
+      setFunds(funds.filter((f) => f.id !== 'craft'))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const now = new Date()
   const monthLabel = now.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
@@ -367,13 +391,14 @@ function App() {
             <section className="rounded-apple border border-border-default p-5">
               <div className="flex items-baseline justify-between">
                 <h2 className="text-[15px] font-medium text-ink-heading">Sinking Funds</h2>
-                <span className="text-[11px] font-light text-ink-caption">edit in Settings below</span>
+                <span className="text-[11px] font-light text-ink-caption">
+                  each check auto-funds what the date needs
+                </span>
               </div>
               <div className="mt-3 space-y-2.5">
                 {funds.map((fund) => {
                   const progress = fund.target && fund.target > 0 ? Math.min(1, fund.current / fund.target) : null
-                  const weekly = neededPerWeek(fund, now)
-                  const perCheck = weekly === null ? null : (weekly * 52) / 12 / profile.checksPerMonth
+                  const perCheck = fund.perCheck > 0 ? fund.perCheck : neededPerCheck(fund, now, profile)
                   return (
                     <div key={fund.id} className="flex items-center gap-3">
                       <span className="w-32 shrink-0 truncate text-[12px] text-ink-body">{fund.name}</span>
@@ -504,8 +529,8 @@ function App() {
                         <input type="number" min="0" aria-label={`${fund.name} target`} value={fund.target ?? 0} onChange={(e) => updateFund(fund.id, { target: num(e.target.value) || null })} className={`${editorInputClass} w-20`} />
                       </label>
                       <label className="flex items-center gap-1 text-[11px] text-ink-caption">
-                        $/chk
-                        <input type="number" min="0" aria-label={`${fund.name} per-check contribution`} value={fund.perCheck} onChange={(e) => updateFund(fund.id, { perCheck: num(e.target.value) })} className={`${editorInputClass} w-16`} />
+                        $/chk (0 = auto)
+                        <input type="number" min="0" aria-label={`${fund.name} per-check contribution, zero means automatic`} value={fund.perCheck} onChange={(e) => updateFund(fund.id, { perCheck: num(e.target.value) })} className={`${editorInputClass} w-16`} />
                       </label>
                     </div>
                   </div>

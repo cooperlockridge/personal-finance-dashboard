@@ -55,15 +55,15 @@ export const DEFAULT_PROFILE: Profile = {
 }
 
 /* Seeded from Laken Budget 2026.xlsx (read Aug 5, 2026). Giving is 5% per
-   Cooper's spec; the sheet was using 7.5%. */
+   Cooper's spec; the sheet was using 7.5%. The Envelope Challenge's $613 was
+   split into General (+313) and Wedding (+300) per Cooper, Aug 6 2026. */
 export const DEFAULT_ENVELOPES: Envelope[] = [
-  { id: 'wedding', name: 'Wedding Savings', kind: 'percentNet', value: 10, balance: 2672.69, countsAsSavings: true, remaining: null },
-  { id: 'general', name: 'General Savings', kind: 'percentNet', value: 20, balance: 24958.32, countsAsSavings: true, remaining: null },
+  { id: 'wedding', name: 'Wedding Savings', kind: 'percentNet', value: 10, balance: 2972.69, countsAsSavings: true, remaining: null },
+  { id: 'general', name: 'General Savings', kind: 'percentNet', value: 20, balance: 25271.32, countsAsSavings: true, remaining: null },
   { id: 'giving', name: 'Giving Savings', kind: 'percentNet', value: 5, balance: 335.33, countsAsSavings: false, remaining: null },
   { id: 'expenses', name: 'Expenses', kind: 'percentNet', value: 10, balance: 79.48, countsAsSavings: false, remaining: null },
   { id: 'car', name: 'Car Payment', kind: 'fixedPerCheck', value: 125, balance: 0, countsAsSavings: false, remaining: 3000 },
   { id: 'roth', name: 'Roth IRA', kind: 'percentGross', value: 10, balance: 3067, countsAsSavings: true, remaining: null },
-  { id: 'challenge', name: 'Envelope Challenge', kind: 'fixedPerCheck', value: 0, balance: 613, countsAsSavings: true, remaining: null },
 ]
 
 export const DEFAULT_FUNDS: Fund[] = [
@@ -71,7 +71,6 @@ export const DEFAULT_FUNDS: Fund[] = [
   { id: 'phone', name: 'New Phone', target: 1200, current: 0, deadline: '2027-07', perCheck: 0, note: 'Target is a placeholder — set the real price incl. tax' },
   { id: 'italy', name: 'Italy Plane Ticket', target: 1500, current: 0, deadline: '2027-08', perCheck: 0 },
   { id: 'moveout', name: 'Move Out', target: 2500, current: 0, deadline: '2028-01', perCheck: 0 },
-  { id: 'craft', name: 'Laken Craft', target: null, current: 0, deadline: null, perCheck: 0 },
   { id: 'band', name: 'Wedding Band', target: 1500, current: 0, deadline: '2028-03', perCheck: 0 },
 ]
 
@@ -126,10 +125,19 @@ export function buildPaycheck(
     if (amount > 0) envelopeAmounts[env.id] = amount
     allocated += amount
   }
+  /* Funds auto-contribute what their deadline needs; a manual $/check overrides. */
+  const checkDate = new Date(`${date}T00:00:00`)
   for (const fund of funds) {
-    if (fund.perCheck > 0) {
-      fundAmounts[fund.id] = fund.perCheck
-      allocated += fund.perCheck
+    const auto = neededPerCheck(fund, checkDate, profile)
+    const amount =
+      fund.perCheck > 0
+        ? fund.perCheck
+        : auto !== null
+          ? Math.round(auto * 100) / 100
+          : 0
+    if (amount > 0) {
+      fundAmounts[fund.id] = amount
+      allocated += amount
     }
   }
   return {
@@ -162,6 +170,12 @@ export function neededPerWeek(fund: Fund, now: Date): number | null {
   const weeks = weeksLeft(fund, now)
   if (weeks === null || fund.target === null) return null
   return Math.max(0, (fund.target - fund.current) / weeks)
+}
+
+export function neededPerCheck(fund: Fund, now: Date, profile: Profile): number | null {
+  const weekly = neededPerWeek(fund, now)
+  if (weekly === null) return null
+  return (weekly * 52) / 12 / Math.max(1, profile.checksPerMonth)
 }
 
 export function currency(n: number): string {
