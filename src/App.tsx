@@ -6,6 +6,7 @@ import {
   buildPaycheck,
   currency,
   grossForCheck,
+  learnedWithholding,
   neededPerWeek,
   usePersistentState,
   type Envelope,
@@ -47,15 +48,15 @@ function App() {
   const typedNet = Number.parseFloat(amountInput)
   const typedHours = Number.parseFloat(hoursInput)
   const hoursOrNull = Number.isFinite(typedHours) && typedHours > 0 ? typedHours : null
-  const typicalGross = grossForCheck(profile, hoursOrNull)
+  const withholding = learnedWithholding(paychecks, profile)
 
   const preview =
     Number.isFinite(typedNet) && typedNet > 0
-      ? buildPaycheck(typedNet, hoursOrNull, dateInput, profile, envelopes, funds)
+      ? buildPaycheck(typedNet, hoursOrNull, dateInput, profile, envelopes, funds, withholding)
       : null
 
   const latest = paychecks[0]
-  const latestGross = latest ? grossForCheck(profile, latest.hours) : null
+  const latestGross = latest ? (latest.gross ?? grossForCheck(profile, latest.hours)) : null
   const taxRate =
     latest && latestGross && latest.net <= latestGross
       ? Math.round((1 - latest.net / latestGross) * 100)
@@ -75,7 +76,7 @@ function App() {
       return
     }
     setFormError('')
-    const check = buildPaycheck(net, hoursOrNull, dateInput, profile, envelopes, funds)
+    const check = buildPaycheck(net, hoursOrNull, dateInput, profile, envelopes, funds, withholding)
     setPaychecks([check, ...paychecks])
     setEnvelopes(
       envelopes.map((env) => {
@@ -158,7 +159,7 @@ function App() {
           />
           <SummaryCard
             label="Effective Tax Rate"
-            value={taxRate === null ? '—' : `${taxRate}%`}
+            value={taxRate === null ? '—' : `${taxRate}%${latest?.grossEstimated ? ' est.' : ''}`}
             note="Latest paycheck vs gross"
           />
           <SummaryCard
@@ -213,15 +214,25 @@ function App() {
             </button>
           </div>
           {formError && <p className="mt-2 text-[12px] text-accent">{formError}</p>}
-          {Number.isFinite(typedNet) && typedNet > typicalGross && (
+          {preview && preview.net > preview.gross && (
             <p className="mt-2 text-[12px] text-ink-rose">
               Heads up: that's more than gross for {hoursOrNull ?? profile.typicalHours} hrs (
-              {currency(typicalGross)}) — double-check the amount or hours.
+              {currency(preview.gross)}) — double-check the amount or hours.
             </p>
           )}
 
           {preview && (
             <div className="mt-5 space-y-4">
+              <p className="text-[12px] font-light tabular-nums text-ink-rose">
+                Gross for this check: {currency(preview.gross)}
+                {!preview.grossEstimated
+                  ? ` at ${hoursOrNull} hrs`
+                  : withholding !== null
+                    ? ` — estimated from her usual ${Math.round(withholding * 100)}% withholding (≈ ${
+                        Math.round((preview.gross / profile.hourlyRate) * 10) / 10
+                      } hrs)`
+                    : ` — assumes ${profile.typicalHours} hrs; enter hours on a check once and this becomes a learned estimate`}
+              </p>
               <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
                 {envelopes
                   .filter((env) => (preview.envelopeAmounts[env.id] ?? 0) > 0)
@@ -480,9 +491,12 @@ function App() {
                 onChange={(v) => setProfile({ ...profile, hysaInterestToDate: v })}
               />
               <p className="text-[12px] font-light text-pretty text-ink-caption">
-                Gross per check = rate × hours ({currency(grossForCheck(profile, null))} at{' '}
-                {profile.typicalHours} hrs). The Roth IRA envelope uses gross so her "10% pre-tax"
-                math works even though she funds it from take-home.
+                When hours are entered, gross = rate × hours exactly. When they're not, gross is
+                estimated from her usual withholding rate (learned from checks that did include
+                hours{withholding !== null ? ` — currently ${Math.round(withholding * 100)}%` : ''});
+                until one exists it assumes {profile.typicalHours} hrs (
+                {currency(grossForCheck(profile, null))}). The Roth IRA envelope uses gross so her
+                "10% pre-tax" math works even though she funds it from take-home.
               </p>
             </div>
           </section>

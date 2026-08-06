@@ -37,6 +37,9 @@ export type Paycheck = {
   date: string
   net: number
   hours: number | null
+  /** Gross used for this check's math, and whether it was estimated. */
+  gross: number
+  grossEstimated: boolean
   /** Snapshot of what was allocated where, so removal can reverse it. */
   envelopeAmounts: Record<string, number>
   fundAmounts: Record<string, number>
@@ -76,6 +79,20 @@ export function grossForCheck(profile: Profile, hours: number | null): number {
   return profile.hourlyRate * (hours ?? profile.typicalHours)
 }
 
+/**
+ * Average withholding rate learned from checks that included hours
+ * (rate × hours gives exact gross, so 1 − net/gross is her real rate).
+ * Null until at least one such check exists.
+ */
+export function learnedWithholding(paychecks: Paycheck[], profile: Profile): number | null {
+  const rates = paychecks
+    .filter((p) => p.hours !== null && p.hours > 0)
+    .map((p) => 1 - p.net / (profile.hourlyRate * (p.hours as number)))
+    .filter((r) => r > 0 && r < 0.5)
+  if (rates.length === 0) return null
+  return rates.reduce((sum, r) => sum + r, 0) / rates.length
+}
+
 export function envelopeAmount(env: Envelope, net: number, gross: number): number {
   if (env.remaining !== null && env.remaining <= 0) return 0
   let amount = 0
@@ -93,8 +110,14 @@ export function buildPaycheck(
   profile: Profile,
   envelopes: Envelope[],
   funds: Fund[],
+  withholding: number | null,
 ): Paycheck {
-  const gross = grossForCheck(profile, hours)
+  const gross =
+    hours !== null
+      ? profile.hourlyRate * hours
+      : withholding !== null
+        ? net / (1 - withholding)
+        : grossForCheck(profile, null)
   const envelopeAmounts: Record<string, number> = {}
   const fundAmounts: Record<string, number> = {}
   let allocated = 0
@@ -114,6 +137,8 @@ export function buildPaycheck(
     date,
     net,
     hours,
+    gross,
+    grossEstimated: hours === null,
     envelopeAmounts,
     fundAmounts,
     leftover: net - allocated,
