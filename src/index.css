@@ -1,19 +1,21 @@
 @import "@fontsource-variable/inter";
 @import "tailwindcss";
 
-/* apple-ui-skills tokens (.claude/skills/apple-ui-skills/SKILL.md) */
+/* apple-ui-skills structure (.claude/skills/apple-ui-skills/SKILL.md), pink palette */
 @theme {
   --font-sans: "Inter Variable", "Inter", ui-sans-serif, system-ui, sans-serif;
 
   --color-surface-base: #ffffff;
-  --color-surface-raised: #0858dc;
+  --color-surface-tint: #fff0f3;
   --color-ink-heading: #2d2b30;
   --color-ink-body: #454547;
   --color-ink-caption: #707070;
-  --color-ink-secondary: #6d89b5;
-  --color-ink-tertiary: #90c5f1;
-  --color-border-default: #b5c7d8;
-  --color-accent: #155bd0;
+  --color-ink-rose: #a2596b;
+  --color-border-default: #f7ccd5;
+  --color-pink: #ff8da1;
+  --color-pink-hover: #ffa2b3;
+  --color-accent: #c03760;
+  --color-accent-hover: #d14b73;
 
   --radius-apple: 21px;
 }
