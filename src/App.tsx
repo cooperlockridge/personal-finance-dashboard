@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { SignedIn, SignedOut, SignInButton, UserButton } from '@clerk/clerk-react'
 import {
   DEFAULT_ENVELOPES,
   DEFAULT_FUNDS,
@@ -269,12 +270,35 @@ function App() {
       <header className="border-b border-border-default">
         <div className="mx-auto flex max-w-[1200px] items-center justify-between px-6 py-3">
           <h1 className="text-[16px] font-semibold text-ink-heading">Laken's Finance</h1>
-          <span className="text-[12px] font-light tabular-nums text-ink-rose">
-            {monthLabel} · ${profile.hourlyRate}/hr · HYSA {profile.hysaApy}%
-          </span>
+          <div className="flex items-center gap-4">
+            <span className="text-[12px] font-light tabular-nums text-ink-rose">
+              {monthLabel} · ${profile.hourlyRate}/hr · HYSA {profile.hysaApy}%
+            </span>
+            <SignedIn>
+              <UserButton />
+            </SignedIn>
+          </div>
         </div>
       </header>
 
+      <SignedOut>
+        <div className="mx-auto max-w-sm px-6 py-24 text-center">
+          <p className="text-[21px] font-semibold text-ink-heading">Hi, Laken 🌸</p>
+          <p className="mt-2 text-[14px] text-pretty text-ink-caption">
+            Sign in to see the dashboard and enter this week's paycheck.
+          </p>
+          <SignInButton mode="modal">
+            <button
+              type="button"
+              className="mt-5 rounded-apple bg-pink px-6 py-2 text-[14px] font-medium text-ink-heading hover:bg-pink-hover"
+            >
+              Sign in
+            </button>
+          </SignInButton>
+        </div>
+      </SignedOut>
+
+      <SignedIn>
       <main className="mx-auto max-w-[1200px] space-y-4 px-6 py-4">
         <section className="grid grid-cols-2 gap-4 lg:grid-cols-4">
           <StatTile label="Total Savings" value={currency(savingsTotal)} />
@@ -589,6 +613,7 @@ function App() {
           </details>
         </div>
       </main>
+      </SignedIn>
     </div>
   )
 }
