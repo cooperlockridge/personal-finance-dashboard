@@ -16,14 +16,117 @@ import {
 } from './lib/finance'
 
 const inputClass =
-  'rounded-apple border border-border-default bg-surface-base px-4 py-2 text-[15px] text-ink-body tabular-nums'
-const smallInputClass =
-  'w-24 rounded-apple border border-border-default bg-surface-base px-3 py-1 text-[14px] text-ink-body tabular-nums'
+  'rounded-apple border border-border-default bg-surface-base px-3 py-1.5 text-[14px] text-ink-body tabular-nums'
 
 const KIND_LABELS: Record<EnvelopeKind, string> = {
   percentNet: '% of take-home',
   percentGross: '% of gross',
   fixedPerCheck: '$ per check',
+}
+
+/* Categorical palette validated with the dataviz skill's checker (CVD-safe in
+   this draw order on white). Leftover is a tint slice, not a series color. */
+const SLOT_COLORS = ['#2a78d6', '#008300', '#e87ba4', '#eda100', '#1baf7a', '#eb6834', '#4a3aa7', '#e34948']
+const ENTITY_SLOTS: Record<string, number> = {
+  general: 0,
+  giving: 1,
+  wedding: 2,
+  expenses: 3,
+  car: 4,
+  roth: 5,
+}
+const FUNDS_SLOT = 6
+const LEFTOVER_COLOR = '#fff0f3'
+
+type Slice = { id: string; label: string; amount: number; color: string }
+
+function donutSlices(check: Paycheck, envelopes: Envelope[]): Slice[] {
+  const slices: Slice[] = []
+  for (const env of envelopes) {
+    const amount = check.envelopeAmounts[env.id] ?? 0
+    if (amount <= 0) continue
+    const slot = ENTITY_SLOTS[env.id] ?? 7
+    slices.push({ id: env.id, label: env.name, amount, color: SLOT_COLORS[slot] })
+  }
+  const fundTotal = Object.values(check.fundAmounts).reduce((s, v) => s + v, 0)
+  if (fundTotal > 0) {
+    slices.push({ id: 'funds', label: 'Sinking funds', amount: fundTotal, color: SLOT_COLORS[FUNDS_SLOT] })
+  }
+  slices.sort((a, b) => SLOT_COLORS.indexOf(a.color) - SLOT_COLORS.indexOf(b.color))
+  if (check.leftover > 0) {
+    slices.push({ id: 'leftover', label: 'Stays in checking', amount: check.leftover, color: LEFTOVER_COLOR })
+  }
+  return slices
+}
+
+function arcPath(cx: number, cy: number, r: number, a0: number, a1: number): string {
+  const x0 = cx + r * Math.cos(a0)
+  const y0 = cy + r * Math.sin(a0)
+  const x1 = cx + r * Math.cos(a1)
+  const y1 = cy + r * Math.sin(a1)
+  const large = a1 - a0 > Math.PI ? 1 : 0
+  return `M ${x0} ${y0} A ${r} ${r} 0 ${large} 1 ${x1} ${y1}`
+}
+
+function Donut({ slices, centerLabel, centerValue }: { slices: Slice[]; centerLabel: string; centerValue: string }) {
+  const [hovered, setHovered] = useState<Slice | null>(null)
+  const total = slices.reduce((s, x) => s + x.amount, 0)
+  const gap = slices.length > 1 ? 0.04 : 0
+  let angle = -Math.PI / 2
+  const arcs = slices.map((slice) => {
+    const sweep = total > 0 ? (slice.amount / total) * Math.PI * 2 : 0
+    const a0 = angle
+    const a1 = angle + Math.max(0.001, sweep - gap)
+    angle += sweep
+    return { slice, a0, a1 }
+  })
+  const shown = hovered ?? null
+  return (
+    <div className="flex items-center gap-5">
+      <svg width="176" height="176" viewBox="0 0 176 176" role="img" aria-label="Paycheck split">
+        {arcs.map(({ slice, a0, a1 }) => (
+          <path
+            key={slice.id}
+            d={arcPath(88, 88, 62, a0, a1)}
+            fill="none"
+            stroke={slice.color}
+            strokeWidth={hovered?.id === slice.id ? 30 : 24}
+            strokeLinecap="butt"
+            onMouseEnter={() => setHovered(slice)}
+            onMouseLeave={() => setHovered(null)}
+          >
+            <title>{`${slice.label}: ${currency(slice.amount)}`}</title>
+          </path>
+        ))}
+        <text x="88" y="83" textAnchor="middle" className="fill-ink-caption" fontSize="10" fontWeight="300">
+          {shown ? shown.label : centerLabel}
+        </text>
+        <text x="88" y="100" textAnchor="middle" className="fill-ink-heading" fontSize="15" fontWeight="600">
+          {shown ? currency(shown.amount) : centerValue}
+        </text>
+      </svg>
+      <ul className="grid flex-1 grid-cols-1 gap-1">
+        {slices.map((slice) => (
+          <li
+            key={slice.id}
+            className="flex items-center gap-2 text-[12px]"
+            onMouseEnter={() => setHovered(slice)}
+            onMouseLeave={() => setHovered(null)}
+          >
+            <span
+              className="size-2 shrink-0 rounded-full"
+              style={{
+                background: slice.color,
+                boxShadow: slice.id === 'leftover' ? 'inset 0 0 0 1px #e8d0d6' : undefined,
+              }}
+            />
+            <span className="truncate text-ink-body">{slice.label}</span>
+            <span className="ml-auto tabular-nums text-ink-caption">{currency(slice.amount)}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
 }
 
 function App() {
@@ -39,11 +142,8 @@ function App() {
 
   const now = new Date()
   const monthLabel = now.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
-  const monthShort = monthLabel.slice(0, 3)
   const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
-  const monthNet = paychecks
-    .filter((p) => p.date.startsWith(monthKey))
-    .reduce((sum, p) => sum + p.net, 0)
+  const monthNet = paychecks.filter((p) => p.date.startsWith(monthKey)).reduce((s, p) => s + p.net, 0)
 
   const typedNet = Number.parseFloat(amountInput)
   const typedHours = Number.parseFloat(hoursInput)
@@ -56,16 +156,22 @@ function App() {
       : null
 
   const latest = paychecks[0]
+  const donutCheck = preview ?? latest ?? null
   const latestGross = latest ? (latest.gross ?? grossForCheck(profile, latest.hours)) : null
   const taxRate =
     latest && latestGross && latest.net <= latestGross
       ? Math.round((1 - latest.net / latestGross) * 100)
       : null
 
-  const savingsBalance =
-    envelopes.filter((e) => e.countsAsSavings).reduce((sum, e) => sum + e.balance, 0) +
-    funds.reduce((sum, f) => sum + f.current, 0) +
-    profile.hysaInterestToDate
+  const savingsRows = [
+    ...envelopes
+      .filter((e) => e.countsAsSavings)
+      .map((e) => ({ id: e.id, label: e.name, amount: e.balance })),
+    { id: 'funds', label: 'Sinking funds', amount: funds.reduce((s, f) => s + f.current, 0) },
+    { id: 'interest', label: 'HYSA interest', amount: profile.hysaInterestToDate },
+  ].sort((a, b) => b.amount - a.amount)
+  const savingsTotal = savingsRows.reduce((s, r) => s + r.amount, 0)
+  const savingsMax = Math.max(...savingsRows.map((r) => r.amount), 1)
   const generalBalance = envelopes.find((e) => e.id === 'general')?.balance ?? 0
   const estMonthlyInterest = (generalBalance * profile.hysaApy) / 100 / 12
 
@@ -132,421 +238,302 @@ function App() {
   return (
     <div className="min-h-dvh bg-surface-base text-ink-body">
       <header className="border-b border-border-default">
-        <div className="mx-auto flex max-w-5xl items-center justify-between px-8 py-3">
-          <span className="text-[16px] font-medium text-ink-heading">Laken's Finance</span>
+        <div className="mx-auto flex max-w-[1200px] items-center justify-between px-6 py-3">
+          <h1 className="text-[16px] font-semibold text-ink-heading">Laken's Finance</h1>
           <span className="text-[12px] font-light tabular-nums text-ink-rose">
-            ${profile.hourlyRate}/hr · HYSA {profile.hysaApy}%
+            {monthLabel} · ${profile.hourlyRate}/hr · HYSA {profile.hysaApy}%
           </span>
         </div>
       </header>
 
-      <main className="mx-auto max-w-5xl space-y-8 px-8 py-12">
-        <div>
-          <h1 className="text-[51px] font-bold text-balance text-ink-heading">Dashboard</h1>
-          <p className="text-[16px] text-pretty text-ink-caption">{monthLabel}</p>
-        </div>
-
-        <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <SummaryCard
-            label="Total Savings"
-            value={currency(savingsBalance)}
-            note="Envelopes + funds + HYSA interest"
-          />
-          <SummaryCard
-            label={`Income (${monthShort})`}
-            value={currency(monthNet)}
-            note="Take-home entered this month"
-          />
-          <SummaryCard
+      <main className="mx-auto max-w-[1200px] space-y-4 px-6 py-4">
+        <section className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+          <StatTile label="Total Savings" value={currency(savingsTotal)} />
+          <StatTile label={`Income (${monthLabel.slice(0, 3)})`} value={currency(monthNet)} />
+          <StatTile
             label="Effective Tax Rate"
             value={taxRate === null ? '—' : `${taxRate}%${latest?.grossEstimated ? ' est.' : ''}`}
-            note="Latest paycheck vs gross"
           />
-          <SummaryCard
+          <StatTile
             label="HYSA Interest"
             value={`≈ ${currency(estMonthlyInterest)}/mo`}
-            note={`${currency(profile.hysaInterestToDate)} earned to date`}
+            note={`${currency(profile.hysaInterestToDate)} to date`}
           />
         </section>
 
-        <section className="rounded-apple border border-border-default bg-surface-tint p-6">
-          <h2 className="text-[16px] font-medium text-ink-heading">This Paycheck</h2>
-          <p className="mt-1 text-[12px] font-light text-pretty text-ink-caption">
-            Enter the post-tax deposit (and hours if known — otherwise assumes{' '}
-            {profile.typicalHours}). Every envelope and fund below updates when you add it.
-          </p>
-          <div className="mt-4 flex flex-wrap items-center gap-4">
-            <input
-              type="number"
-              inputMode="decimal"
-              min="0"
-              step="0.01"
-              placeholder="Take-home amount"
-              aria-label="Take-home paycheck amount"
-              value={amountInput}
-              onChange={(e) => setAmountInput(e.target.value)}
-              className={`${inputClass} w-44`}
-            />
-            <input
-              type="number"
-              inputMode="decimal"
-              min="0"
-              step="0.5"
-              placeholder={`Hours (${profile.typicalHours})`}
-              aria-label="Hours worked this check"
-              value={hoursInput}
-              onChange={(e) => setHoursInput(e.target.value)}
-              className={`${inputClass} w-32`}
-            />
-            <input
-              type="date"
-              aria-label="Paycheck date"
-              value={dateInput}
-              onChange={(e) => setDateInput(e.target.value)}
-              className={inputClass}
-            />
-            <button
-              type="button"
-              onClick={addPaycheck}
-              className="rounded-apple bg-pink px-5 py-2 text-[14px] font-medium text-ink-heading hover:bg-pink-hover disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Add Paycheck
-            </button>
-          </div>
-          {formError && <p className="mt-2 text-[12px] text-accent">{formError}</p>}
-          {preview && preview.net > preview.gross && (
-            <p className="mt-2 text-[12px] text-ink-rose">
-              Heads up: that's more than gross for {hoursOrNull ?? profile.typicalHours} hrs (
-              {currency(preview.gross)}) — double-check the amount or hours.
-            </p>
-          )}
-
-          {preview && (
-            <div className="mt-5 space-y-4">
-              <p className="text-[12px] font-light tabular-nums text-ink-rose">
-                Gross for this check: {currency(preview.gross)}
-                {!preview.grossEstimated
-                  ? ` at ${hoursOrNull} hrs`
-                  : withholding !== null
-                    ? ` — estimated from her usual ${Math.round(withholding * 100)}% withholding (≈ ${
-                        Math.round((preview.gross / profile.hourlyRate) * 10) / 10
-                      } hrs)`
-                    : ` — assumes ${profile.typicalHours} hrs; enter hours on a check once and this becomes a learned estimate`}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
+          <section className="rounded-apple border border-border-default bg-surface-tint p-5 lg:col-span-5">
+            <h2 className="text-[15px] font-medium text-ink-heading">This Paycheck</h2>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <input
+                type="number"
+                inputMode="decimal"
+                min="0"
+                step="0.01"
+                placeholder="Take-home $"
+                aria-label="Take-home paycheck amount"
+                value={amountInput}
+                onChange={(e) => setAmountInput(e.target.value)}
+                className={`${inputClass} w-32`}
+              />
+              <input
+                type="number"
+                inputMode="decimal"
+                min="0"
+                step="0.5"
+                placeholder={`Hrs (${profile.typicalHours})`}
+                aria-label="Hours worked this check"
+                value={hoursInput}
+                onChange={(e) => setHoursInput(e.target.value)}
+                className={`${inputClass} w-24`}
+              />
+              <input
+                type="date"
+                aria-label="Paycheck date"
+                value={dateInput}
+                onChange={(e) => setDateInput(e.target.value)}
+                className={inputClass}
+              />
+              <button
+                type="button"
+                onClick={addPaycheck}
+                className="rounded-apple bg-pink px-4 py-1.5 text-[14px] font-medium text-ink-heading hover:bg-pink-hover disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Add
+              </button>
+            </div>
+            {formError && <p className="mt-2 text-[12px] text-accent">{formError}</p>}
+            {preview && preview.net > preview.gross && (
+              <p className="mt-2 text-[12px] text-ink-rose">
+                More than gross for {hoursOrNull ?? profile.typicalHours} hrs ({currency(preview.gross)}) —
+                double-check.
               </p>
-              <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-                {envelopes
-                  .filter((env) => (preview.envelopeAmounts[env.id] ?? 0) > 0)
-                  .map((env) => (
-                    <PreviewCard
-                      key={env.id}
-                      label={env.name}
-                      amount={preview.envelopeAmounts[env.id]}
-                    />
-                  ))}
-                {funds
-                  .filter((fund) => (preview.fundAmounts[fund.id] ?? 0) > 0)
-                  .map((fund) => (
-                    <PreviewCard
-                      key={fund.id}
-                      label={`${fund.name} fund`}
-                      amount={preview.fundAmounts[fund.id]}
-                    />
-                  ))}
-                <PreviewCard label="Stays in checking" amount={preview.leftover} highlight />
-              </div>
-              {preview.leftover < 0 && (
-                <p className="text-[12px] text-accent">
-                  The allocations exceed this paycheck by {currency(-preview.leftover)} — trim an
-                  envelope or fund contribution.
+            )}
+            {preview && preview.leftover < 0 && (
+              <p className="mt-2 text-[12px] text-accent">
+                Allocations exceed this check by {currency(-preview.leftover)}.
+              </p>
+            )}
+            <div className="mt-4">
+              {donutCheck ? (
+                <>
+                  <Donut
+                    slices={donutSlices(donutCheck, envelopes)}
+                    centerLabel={preview ? 'as typed' : 'latest check'}
+                    centerValue={currency(donutCheck.net)}
+                  />
+                  <p className="mt-2 text-[11px] font-light tabular-nums text-ink-rose">
+                    Gross {currency(donutCheck.gross ?? 0)}
+                    {donutCheck.grossEstimated
+                      ? withholding !== null
+                        ? ` · est. from her usual ${Math.round(withholding * 100)}% withholding`
+                        : ` · assumes ${profile.typicalHours} hrs`
+                      : ` · exact (${donutCheck.hours} hrs)`}
+                  </p>
+                </>
+              ) : (
+                <p className="py-10 text-center text-[13px] text-pretty text-ink-caption">
+                  Type an amount above to see the split.
                 </p>
               )}
             </div>
-          )}
-        </section>
-
-        <section className="rounded-apple border border-border-default">
-          <div className="flex items-center justify-between border-b border-border-default px-6 py-4">
-            <h2 className="text-[16px] font-medium text-ink-heading">Envelopes</h2>
-            <span className="text-[12px] font-light text-ink-caption">
-              Balances seeded from her spreadsheet
-            </span>
-          </div>
-          <div className="divide-y divide-border-default">
-            {envelopes.map((env) => (
-              <div key={env.id} className="flex flex-wrap items-center gap-4 px-6 py-4">
-                <input
-                  type="text"
-                  aria-label="Envelope name"
-                  value={env.name}
-                  onChange={(e) => updateEnvelope(env.id, { name: e.target.value })}
-                  className={`${inputClass} w-44 min-w-0 flex-1`}
-                />
-                <select
-                  aria-label={`${env.name} rule type`}
-                  value={env.kind}
-                  onChange={(e) => updateEnvelope(env.id, { kind: e.target.value as EnvelopeKind })}
-                  className={`${inputClass} w-40`}
-                >
-                  {Object.entries(KIND_LABELS).map(([kind, label]) => (
-                    <option key={kind} value={kind}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
-                <input
-                  type="number"
-                  min="0"
-                  aria-label={`${env.name} value`}
-                  value={env.value}
-                  onChange={(e) => updateEnvelope(env.id, { value: num(e.target.value) })}
-                  className={smallInputClass}
-                />
-                <label className="flex items-center gap-2 text-[12px] text-ink-caption">
-                  {env.remaining !== null ? 'Left to pay' : 'Balance'}
-                  <input
-                    type="number"
-                    aria-label={`${env.name} ${env.remaining !== null ? 'remaining' : 'balance'}`}
-                    value={env.remaining !== null ? env.remaining : Math.round(env.balance * 100) / 100}
-                    onChange={(e) =>
-                      env.remaining !== null
-                        ? updateEnvelope(env.id, { remaining: num(e.target.value) })
-                        : updateEnvelope(env.id, { balance: num(e.target.value) })
-                    }
-                    className={smallInputClass}
-                  />
-                </label>
-                {env.id === 'car' && env.remaining !== null && env.remaining > 0 && (
-                  <span className="text-[12px] font-light text-ink-rose">
-                    ≈ paid off in{' '}
-                    {Math.ceil(env.remaining / Math.max(1, env.value * profile.checksPerMonth))} months
-                  </span>
-                )}
-                <button
-                  type="button"
-                  onClick={() => setEnvelopes(envelopes.filter((e) => e.id !== env.id))}
-                  className="ml-auto text-[14px] text-ink-rose hover:text-accent"
-                >
-                  Remove
-                </button>
-              </div>
-            ))}
-          </div>
-          <div className="border-t border-border-default px-6 py-4">
-            <button
-              type="button"
-              onClick={() =>
-                setEnvelopes([
-                  ...envelopes,
-                  {
-                    id: crypto.randomUUID(),
-                    name: 'New Envelope',
-                    kind: 'percentNet',
-                    value: 0,
-                    balance: 0,
-                    countsAsSavings: true,
-                    remaining: null,
-                  },
-                ])
-              }
-              className="text-[14px] font-medium text-accent hover:text-accent-hover"
-            >
-              + Add envelope
-            </button>
-          </div>
-        </section>
-
-        <section className="rounded-apple border border-border-default">
-          <div className="flex items-center justify-between border-b border-border-default px-6 py-4">
-            <h2 className="text-[16px] font-medium text-ink-heading">Sinking Funds</h2>
-            <span className="text-[12px] font-light text-ink-caption">
-              Auto-contributions with "$ / check" set
-            </span>
-          </div>
-          <div className="grid grid-cols-1 gap-4 p-6 sm:grid-cols-2 lg:grid-cols-3">
-            {funds.map((fund) => {
-              const progress =
-                fund.target && fund.target > 0
-                  ? Math.min(1, fund.current / fund.target)
-                  : null
-              const weekly = neededPerWeek(fund, now)
-              const perCheckNeeded =
-                weekly === null ? null : (weekly * 52) / 12 / profile.checksPerMonth
-              return (
-                <div key={fund.id} className="rounded-apple border border-border-default p-5">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-[15px] font-medium text-ink-heading">{fund.name}</p>
-                    {fund.deadline && (
-                      <span className="text-[11px] font-light text-ink-caption">
-                        by{' '}
-                        {new Date(`${fund.deadline}-01T00:00:00`).toLocaleDateString('en-US', {
-                          month: 'short',
-                          year: 'numeric',
-                        })}
-                      </span>
-                    )}
-                  </div>
-                  {progress !== null ? (
-                    <>
-                      <div className="mt-3 h-2 overflow-hidden rounded-apple bg-surface-tint">
-                        <div
-                          className="h-full rounded-apple bg-pink"
-                          style={{ width: `${progress * 100}%` }}
-                        />
-                      </div>
-                      <p className="mt-2 text-[14px] tabular-nums text-ink-body">
-                        {currency(fund.current)}{' '}
-                        <span className="text-ink-caption">of {currency(fund.target ?? 0)}</span>
-                      </p>
-                      {perCheckNeeded !== null && perCheckNeeded > 0 && (
-                        <p className="text-[12px] font-light tabular-nums text-ink-rose">
-                          needs ≈ {currency(perCheckNeeded)}/check to hit the date
-                        </p>
-                      )}
-                      {perCheckNeeded !== null && perCheckNeeded === 0 && (
-                        <p className="text-[12px] font-light text-ink-rose">funded 🎉</p>
-                      )}
-                    </>
-                  ) : (
-                    <p className="mt-3 text-[12px] font-light text-ink-caption">
-                      No target yet — set one below.
-                    </p>
-                  )}
-                  {fund.note && (
-                    <p className="mt-1 text-[11px] font-light text-pretty text-ink-caption">
-                      {fund.note}
-                    </p>
-                  )}
-                  <div className="mt-3 flex flex-wrap gap-3 text-[12px] text-ink-caption">
-                    <label className="flex items-center gap-2">
-                      Saved
-                      <input
-                        type="number"
-                        min="0"
-                        aria-label={`${fund.name} current amount`}
-                        value={Math.round(fund.current * 100) / 100}
-                        onChange={(e) => updateFund(fund.id, { current: num(e.target.value) })}
-                        className={smallInputClass}
-                      />
-                    </label>
-                    <label className="flex items-center gap-2">
-                      Target
-                      <input
-                        type="number"
-                        min="0"
-                        aria-label={`${fund.name} target`}
-                        value={fund.target ?? 0}
-                        onChange={(e) =>
-                          updateFund(fund.id, { target: num(e.target.value) || null })
-                        }
-                        className={smallInputClass}
-                      />
-                    </label>
-                    <label className="flex items-center gap-2">
-                      $ / check
-                      <input
-                        type="number"
-                        min="0"
-                        aria-label={`${fund.name} per-check contribution`}
-                        value={fund.perCheck}
-                        onChange={(e) => updateFund(fund.id, { perCheck: num(e.target.value) })}
-                        className={smallInputClass}
-                      />
-                    </label>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        </section>
-
-        <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
-          <section className="rounded-apple border border-border-default">
-            <div className="border-b border-border-default px-6 py-4">
-              <h2 className="text-[16px] font-medium text-ink-heading">Paycheck Profile</h2>
-            </div>
-            <div className="space-y-4 p-6">
-              <ProfileRow
-                label="Hourly rate ($)"
-                value={profile.hourlyRate}
-                onChange={(v) => setProfile({ ...profile, hourlyRate: v })}
-              />
-              <ProfileRow
-                label="Typical hours / check"
-                value={profile.typicalHours}
-                onChange={(v) => setProfile({ ...profile, typicalHours: v })}
-              />
-              <ProfileRow
-                label="Checks / month"
-                value={profile.checksPerMonth}
-                onChange={(v) => setProfile({ ...profile, checksPerMonth: v })}
-              />
-              <ProfileRow
-                label="HYSA APY (%)"
-                value={profile.hysaApy}
-                onChange={(v) => setProfile({ ...profile, hysaApy: v })}
-              />
-              <ProfileRow
-                label="HYSA interest to date ($)"
-                value={profile.hysaInterestToDate}
-                onChange={(v) => setProfile({ ...profile, hysaInterestToDate: v })}
-              />
-              <p className="text-[12px] font-light text-pretty text-ink-caption">
-                When hours are entered, gross = rate × hours exactly. When they're not, gross is
-                estimated from her usual withholding rate (learned from checks that did include
-                hours{withholding !== null ? ` — currently ${Math.round(withholding * 100)}%` : ''});
-                until one exists it assumes {profile.typicalHours} hrs (
-                {currency(grossForCheck(profile, null))}). The Roth IRA envelope uses gross so her
-                "10% pre-tax" math works even though she funds it from take-home.
-              </p>
-            </div>
           </section>
 
-          <section className="rounded-apple border border-border-default">
-            <div className="flex items-center justify-between border-b border-border-default px-6 py-4">
-              <h2 className="text-[16px] font-medium text-ink-heading">Recent Paychecks</h2>
-              <span className="text-[11px] font-light text-ink-caption">Saved on this device</span>
+          <div className="space-y-4 lg:col-span-7">
+            <section className="rounded-apple border border-border-default p-5">
+              <div className="flex items-baseline justify-between">
+                <h2 className="text-[15px] font-medium text-ink-heading">Savings Breakdown</h2>
+                <span className="text-[12px] tabular-nums text-ink-caption">{currency(savingsTotal)} total</span>
+              </div>
+              <div className="mt-3 space-y-2">
+                {savingsRows.map((row) => (
+                  <div key={row.id} className="flex items-center gap-3">
+                    <span className="w-32 shrink-0 truncate text-[12px] text-ink-body">{row.label}</span>
+                    <div className="h-4 flex-1 overflow-hidden rounded-[4px] bg-surface-tint">
+                      <div
+                        className="h-full rounded-[4px]"
+                        style={{
+                          width: `${Math.max(0.5, (row.amount / savingsMax) * 100)}%`,
+                          background: '#e87ba4',
+                        }}
+                      />
+                    </div>
+                    <span className="w-20 shrink-0 text-right text-[12px] tabular-nums text-ink-caption">
+                      {currency(row.amount)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            <section className="rounded-apple border border-border-default p-5">
+              <div className="flex items-baseline justify-between">
+                <h2 className="text-[15px] font-medium text-ink-heading">Sinking Funds</h2>
+                <span className="text-[11px] font-light text-ink-caption">edit in Settings below</span>
+              </div>
+              <div className="mt-3 space-y-2.5">
+                {funds.map((fund) => {
+                  const progress = fund.target && fund.target > 0 ? Math.min(1, fund.current / fund.target) : null
+                  const weekly = neededPerWeek(fund, now)
+                  const perCheck = weekly === null ? null : (weekly * 52) / 12 / profile.checksPerMonth
+                  return (
+                    <div key={fund.id} className="flex items-center gap-3">
+                      <span className="w-32 shrink-0 truncate text-[12px] text-ink-body">{fund.name}</span>
+                      <div className="h-2 flex-1 overflow-hidden rounded-full bg-surface-tint">
+                        {progress !== null && (
+                          <div className="h-full rounded-full bg-pink" style={{ width: `${progress * 100}%` }} />
+                        )}
+                      </div>
+                      <span className="w-44 shrink-0 text-right text-[11px] tabular-nums text-ink-caption">
+                        {fund.target
+                          ? `${currency(fund.current)} of ${currency(fund.target)}${
+                              perCheck && perCheck > 0 ? ` · ${currency(perCheck)}/check` : ''
+                            }`
+                          : 'no target set'}
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            </section>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+          <details className="rounded-apple border border-border-default p-4">
+            <summary className="cursor-pointer text-[14px] font-medium text-ink-heading">Envelopes</summary>
+            <div className="mt-3 space-y-3">
+              {envelopes.map((env) => (
+                <div key={env.id} className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="text"
+                    aria-label="Envelope name"
+                    value={env.name}
+                    onChange={(e) => updateEnvelope(env.id, { name: e.target.value })}
+                    className={`${inputClass} w-32 min-w-0 flex-1`}
+                  />
+                  <select
+                    aria-label={`${env.name} rule type`}
+                    value={env.kind}
+                    onChange={(e) => updateEnvelope(env.id, { kind: e.target.value as EnvelopeKind })}
+                    className={`${inputClass} w-36`}
+                  >
+                    {Object.entries(KIND_LABELS).map(([kind, label]) => (
+                      <option key={kind} value={kind}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    type="number"
+                    min="0"
+                    aria-label={`${env.name} value`}
+                    value={env.value}
+                    onChange={(e) => updateEnvelope(env.id, { value: num(e.target.value) })}
+                    className={`${inputClass} w-16`}
+                  />
+                  <label className="flex items-center gap-1 text-[11px] text-ink-caption">
+                    {env.remaining !== null ? 'left' : 'bal'}
+                    <input
+                      type="number"
+                      aria-label={`${env.name} ${env.remaining !== null ? 'remaining' : 'balance'}`}
+                      value={env.remaining !== null ? env.remaining : Math.round(env.balance * 100) / 100}
+                      onChange={(e) =>
+                        env.remaining !== null
+                          ? updateEnvelope(env.id, { remaining: num(e.target.value) })
+                          : updateEnvelope(env.id, { balance: num(e.target.value) })
+                      }
+                      className={`${inputClass} w-24`}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setEnvelopes(envelopes.filter((e) => e.id !== env.id))}
+                    className="text-[12px] text-ink-rose hover:text-accent"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+              <button
+                type="button"
+                onClick={() =>
+                  setEnvelopes([
+                    ...envelopes,
+                    {
+                      id: crypto.randomUUID(),
+                      name: 'New Envelope',
+                      kind: 'percentNet',
+                      value: 0,
+                      balance: 0,
+                      countsAsSavings: true,
+                      remaining: null,
+                    },
+                  ])
+                }
+                className="text-[13px] font-medium text-accent hover:text-accent-hover"
+              >
+                + Add envelope
+              </button>
             </div>
+          </details>
+
+          <details className="rounded-apple border border-border-default p-4">
+            <summary className="cursor-pointer text-[14px] font-medium text-ink-heading">
+              Settings & Funds
+            </summary>
+            <div className="mt-3 space-y-3">
+              <ProfileRow label="Hourly rate ($)" value={profile.hourlyRate} onChange={(v) => setProfile({ ...profile, hourlyRate: v })} />
+              <ProfileRow label="Typical hours / check" value={profile.typicalHours} onChange={(v) => setProfile({ ...profile, typicalHours: v })} />
+              <ProfileRow label="Checks / month" value={profile.checksPerMonth} onChange={(v) => setProfile({ ...profile, checksPerMonth: v })} />
+              <ProfileRow label="HYSA APY (%)" value={profile.hysaApy} onChange={(v) => setProfile({ ...profile, hysaApy: v })} />
+              <ProfileRow label="HYSA interest to date ($)" value={profile.hysaInterestToDate} onChange={(v) => setProfile({ ...profile, hysaInterestToDate: v })} />
+              <div className="border-t border-border-default pt-3">
+                {funds.map((fund) => (
+                  <div key={fund.id} className="mb-2 flex flex-wrap items-center gap-2">
+                    <span className="w-28 truncate text-[12px] text-ink-body">{fund.name}</span>
+                    <label className="flex items-center gap-1 text-[11px] text-ink-caption">
+                      saved
+                      <input type="number" min="0" aria-label={`${fund.name} current`} value={Math.round(fund.current * 100) / 100} onChange={(e) => updateFund(fund.id, { current: num(e.target.value) })} className={`${inputClass} w-20`} />
+                    </label>
+                    <label className="flex items-center gap-1 text-[11px] text-ink-caption">
+                      target
+                      <input type="number" min="0" aria-label={`${fund.name} target`} value={fund.target ?? 0} onChange={(e) => updateFund(fund.id, { target: num(e.target.value) || null })} className={`${inputClass} w-20`} />
+                    </label>
+                    <label className="flex items-center gap-1 text-[11px] text-ink-caption">
+                      $/check
+                      <input type="number" min="0" aria-label={`${fund.name} per-check contribution`} value={fund.perCheck} onChange={(e) => updateFund(fund.id, { perCheck: num(e.target.value) })} className={`${inputClass} w-16`} />
+                    </label>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </details>
+
+          <details className="rounded-apple border border-border-default p-4">
+            <summary className="cursor-pointer text-[14px] font-medium text-ink-heading">
+              Recent Paychecks
+            </summary>
             {paychecks.length === 0 ? (
-              <p className="px-6 py-8 text-center text-[14px] text-pretty text-ink-caption">
-                No paychecks yet — add the first one above. Removing one reverses its allocations.
+              <p className="mt-3 text-[12px] font-light text-pretty text-ink-caption">
+                None yet. Removing one reverses its allocations.
               </p>
             ) : (
-              <ul>
-                {paychecks.map((check, i) => (
-                  <li
-                    key={check.id}
-                    className={`flex items-center justify-between gap-4 px-6 py-3 hover:bg-surface-tint ${
-                      i > 0 ? 'border-t border-border-default' : ''
-                    }`}
-                  >
-                    <div className="min-w-0">
-                      <p className="text-[15px] tabular-nums text-ink-heading">
-                        {currency(check.net)}
-                        {check.hours !== null && (
-                          <span className="text-[12px] font-light text-ink-caption">
-                            {' '}
-                            · {check.hours} hrs
-                          </span>
-                        )}
-                      </p>
-                      <p className="truncate text-[12px] font-light tabular-nums text-ink-caption">
-                        {check.date} · {currency(check.leftover)} kept
-                      </p>
-                    </div>
+              <ul className="mt-3 space-y-2">
+                {paychecks.map((check) => (
+                  <li key={check.id} className="flex items-center justify-between gap-3">
+                    <span className="text-[13px] tabular-nums text-ink-body">
+                      {check.date} · {currency(check.net)}
+                      {check.hours !== null && (
+                        <span className="text-[11px] font-light text-ink-caption"> · {check.hours} hrs</span>
+                      )}
+                    </span>
                     {removingId === check.id ? (
-                      <span className="flex shrink-0 items-center gap-4">
-                        <button
-                          type="button"
-                          onClick={() => removePaycheck(check)}
-                          className="text-[14px] font-medium text-accent"
-                        >
-                          Confirm remove
+                      <span className="flex shrink-0 items-center gap-3">
+                        <button type="button" onClick={() => removePaycheck(check)} className="text-[12px] font-medium text-accent">
+                          Confirm
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => setRemovingId(null)}
-                          className="text-[14px] text-ink-caption"
-                        >
+                        <button type="button" onClick={() => setRemovingId(null)} className="text-[12px] text-ink-caption">
                           Cancel
                         </button>
                       </span>
@@ -554,7 +541,7 @@ function App() {
                       <button
                         type="button"
                         onClick={() => setRemovingId(check.id)}
-                        className="shrink-0 text-[14px] text-ink-rose hover:text-accent"
+                        className="shrink-0 text-[12px] text-ink-rose hover:text-accent"
                       >
                         Remove
                       </button>
@@ -563,65 +550,34 @@ function App() {
                 ))}
               </ul>
             )}
-          </section>
+          </details>
         </div>
       </main>
     </div>
   )
 }
 
-function SummaryCard({ label, value, note }: { label: string; value: string; note: string }) {
+function StatTile({ label, value, note }: { label: string; value: string; note?: string }) {
   return (
-    <div className="rounded-apple border border-border-default bg-surface-base p-5">
-      <p className="text-[14px] text-ink-caption">{label}</p>
-      <p className="mt-2 text-[27px] font-medium tabular-nums text-ink-body">{value}</p>
-      <p className="mt-1 text-[12px] font-light text-ink-caption">{note}</p>
+    <div className="rounded-apple border border-border-default bg-surface-base p-4">
+      <p className="text-[12px] text-ink-caption">{label}</p>
+      <p className="mt-1 text-[21px] font-semibold tabular-nums text-ink-heading">{value}</p>
+      {note && <p className="mt-0.5 text-[11px] font-light text-ink-caption">{note}</p>}
     </div>
   )
 }
 
-function PreviewCard({
-  label,
-  amount,
-  highlight = false,
-}: {
-  label: string
-  amount: number
-  highlight?: boolean
-}) {
+function ProfileRow({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
   return (
-    <div
-      className={`rounded-apple border p-4 ${
-        highlight ? 'border-pink bg-surface-base' : 'border-border-default bg-surface-base'
-      }`}
-    >
-      <p className="text-[12px] font-light text-ink-caption">{label}</p>
-      <p className="mt-1 text-[21px] font-medium tabular-nums text-ink-heading">
-        {currency(amount)}
-      </p>
-    </div>
-  )
-}
-
-function ProfileRow({
-  label,
-  value,
-  onChange,
-}: {
-  label: string
-  value: number
-  onChange: (v: number) => void
-}) {
-  return (
-    <label className="flex items-center justify-between gap-4">
-      <span className="text-[15px]">{label}</span>
+    <label className="flex items-center justify-between gap-3">
+      <span className="text-[13px]">{label}</span>
       <input
         type="number"
         min="0"
         step="any"
         value={value}
         onChange={(e) => onChange(Number.parseFloat(e.target.value) || 0)}
-        className={smallInputClass}
+        className={`${inputClass} w-24`}
       />
     </label>
   )
