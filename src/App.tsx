@@ -1,25 +1,35 @@
 import { useEffect, useState } from 'react'
-import { SignedIn, SignedOut, SignInButton, UserButton } from '@clerk/clerk-react'
+import { SignedIn, SignedOut, SignInButton, UserButton, useUser } from '@clerk/clerk-react'
 import {
   DEFAULT_ENVELOPES,
   DEFAULT_FUNDS,
   DEFAULT_PROFILE,
   buildPaycheck,
   currency,
-  grossForCheck,
+  effectiveTaxRate,
+  findDuplicate,
+  fundStatus,
+  fundsPerCheckTotal,
+  grossOf,
   learnedWithholding,
-  neededPerCheck,
+  typicalNet,
   usePersistentState,
   type Envelope,
   type EnvelopeKind,
   type Fund,
+  type FundStatus,
   type Paycheck,
+  type Profile,
 } from './lib/finance'
 
+/* 16px on phones keeps iOS Safari from zooming the page on focus; min-h-11
+   gives a 44px tap target. Both shrink back down at sm. */
 const inputClass =
-  'rounded-apple border border-border-default bg-surface-base px-3 py-1.5 text-[14px] text-ink-body tabular-nums'
+  'rounded-apple border border-border-default bg-surface-base px-3 py-2 text-[16px] text-ink-body tabular-nums min-h-11 sm:min-h-0 sm:py-1.5 sm:text-[14px]'
 const editorInputClass =
-  'rounded-apple border border-border-default bg-surface-base px-2.5 py-1 text-[13px] text-ink-body tabular-nums'
+  'rounded-apple border border-border-default bg-surface-base px-2.5 py-2 text-[16px] text-ink-body tabular-nums min-h-11 sm:min-h-0 sm:py-1 sm:text-[13px]'
+/* Comfortable hit area for the small inline text buttons on touch. */
+const tapClass = 'inline-flex min-h-11 items-center sm:min-h-0'
 
 const KIND_LABELS: Record<EnvelopeKind, string> = {
   percentNet: '% net',
@@ -86,9 +96,16 @@ function Donut({ slices, centerLabel, centerValue }: { slices: Slice[]; centerLa
     return { slice, a0, a1 }
   })
   const shown = hovered ?? null
+  /* Tapping a slice on touch pins the readout, since there's no hover. */
+  const toggle = (slice: Slice) => setHovered((cur) => (cur?.id === slice.id ? null : slice))
   return (
-    <div className="flex items-center gap-5">
-      <svg width="176" height="176" viewBox="0 0 176 176" role="img" aria-label="Paycheck split">
+    <div className="flex flex-col items-center gap-4 sm:flex-row sm:items-center sm:gap-5">
+      <svg
+        viewBox="0 0 176 176"
+        role="img"
+        aria-label="Paycheck split"
+        className="w-40 shrink-0 sm:w-44"
+      >
         {arcs.map(({ slice, a0, a1 }) => (
           <path
             key={slice.id}
@@ -99,6 +116,7 @@ function Donut({ slices, centerLabel, centerValue }: { slices: Slice[]; centerLa
             strokeLinecap="butt"
             onMouseEnter={() => setHovered(slice)}
             onMouseLeave={() => setHovered(null)}
+            onClick={() => toggle(slice)}
           >
             <title>{`${slice.label}: ${currency(slice.amount)}`}</title>
           </path>
@@ -110,13 +128,14 @@ function Donut({ slices, centerLabel, centerValue }: { slices: Slice[]; centerLa
           {shown ? currency(shown.amount) : centerValue}
         </text>
       </svg>
-      <ul className="grid flex-1 grid-cols-1 gap-1">
+      <ul className="grid w-full flex-1 grid-cols-1 gap-1">
         {slices.map((slice) => (
           <li
             key={slice.id}
-            className="flex items-center gap-2 text-[12px]"
+            className="flex items-center gap-2 py-0.5 text-[13px] sm:text-[12px]"
             onMouseEnter={() => setHovered(slice)}
             onMouseLeave={() => setHovered(null)}
+            onClick={() => toggle(slice)}
           >
             <span className="size-2 shrink-0 rounded-full" style={{ background: slice.color }} />
             <span className="truncate text-ink-body">{slice.label}</span>
@@ -138,6 +157,10 @@ function App() {
   const [dateInput, setDateInput] = useState(() => new Date().toISOString().slice(0, 10))
   const [formError, setFormError] = useState('')
   const [removingId, setRemovingId] = useState<string | null>(null)
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  /* Set when the entry matches a check already logged; clears on any edit. */
+  const [duplicateOf, setDuplicateOf] = useState<Paycheck | null>(null)
+  const { user } = useUser()
 
   /* One-time data migration (Aug 6, 2026): the Envelope Challenge's $613
      moved into General (+313) and Wedding (+300); Laken Craft was never a
@@ -172,8 +195,13 @@ function App() {
 
   const now = new Date()
   const monthLabel = now.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+  const monthName = now.toLocaleDateString('en-US', { month: 'long' })
   const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
-  const monthNet = paychecks.filter((p) => p.date.startsWith(monthKey)).reduce((s, p) => s + p.net, 0)
+  const monthChecks = paychecks.filter((p) => p.date.startsWith(monthKey))
+  const monthNet = monthChecks.reduce((s, p) => s + p.net, 0)
+  const firstName = user?.firstName ?? 'Laken'
+  const hour = now.getHours()
+  const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening'
 
   const typedNet = Number.parseFloat(amountInput)
   const typedHours = Number.parseFloat(hoursInput)
@@ -187,11 +215,8 @@ function App() {
 
   const latest = paychecks[0]
   const donutCheck = preview ?? latest ?? null
-  const latestGross = latest ? (latest.gross ?? grossForCheck(profile, latest.hours)) : null
-  const taxRate =
-    latest && latestGross && latest.net <= latestGross
-      ? Math.round((1 - latest.net / latestGross) * 100)
-      : null
+  const latestRate = latest ? effectiveTaxRate(latest.net, grossOf(latest, profile)) : null
+  const taxRate = latestRate === null ? null : Math.round(latestRate * 100)
 
   const savingsRows = [
     ...envelopes
@@ -205,6 +230,29 @@ function App() {
   const generalBalance = envelopes.find((e) => e.id === 'general')?.balance ?? 0
   const estMonthlyInterest = (generalBalance * profile.hysaApy) / 100 / 12
 
+  /* What this month's checks actually moved into savings — every envelope
+     that counts as savings, plus every sinking-fund contribution. */
+  const savingsEnvelopeIds = new Set(envelopes.filter((e) => e.countsAsSavings).map((e) => e.id))
+  const savedThisMonth = monthChecks.reduce((sum, check) => {
+    const toEnvelopes = Object.entries(check.envelopeAmounts)
+      .filter(([id]) => savingsEnvelopeIds.has(id))
+      .reduce((s, [, amount]) => s + amount, 0)
+    const toFunds = Object.values(check.fundAmounts).reduce((s, amount) => s + amount, 0)
+    return sum + toEnvelopes + toFunds
+  }, 0)
+
+  const fundViews = funds.map((fund) => ({ fund, status: fundStatus(fund, now, profile) }))
+  const atRisk = fundViews.filter(
+    (v) => v.status.state === 'behind' || v.status.state === 'overdue' || v.status.state === 'stalled',
+  )
+  const fundsDraw = fundsPerCheckTotal(funds, now, profile)
+  const estNet = typicalNet(profile, withholding)
+  /* Only meaningful once we've learned her real withholding from a check. */
+  const fundsShare = estNet !== null && estNet > 0 ? fundsDraw / estNet : null
+
+  const envelopeNames = new Map(envelopes.map((e) => [e.id, e.name]))
+  const fundNames = new Map(funds.map((f) => [f.id, f.name]))
+
   function addPaycheck() {
     const net = Number.parseFloat(amountInput)
     if (!Number.isFinite(net) || net <= 0) {
@@ -212,6 +260,17 @@ function App() {
       return
     }
     setFormError('')
+    /* Same day, same amount — ask before double-allocating every envelope. */
+    const existing = findDuplicate(paychecks, dateInput, net)
+    if (existing && duplicateOf?.id !== existing.id) {
+      setDuplicateOf(existing)
+      return
+    }
+    commitPaycheck(net)
+  }
+
+  function commitPaycheck(net: number) {
+    setDuplicateOf(null)
     const check = buildPaycheck(net, hoursOrNull, dateInput, profile, envelopes, funds, withholding)
     setPaychecks([check, ...paychecks])
     setEnvelopes(
@@ -251,6 +310,7 @@ function App() {
       }),
     )
     setRemovingId(null)
+    setExpandedId(null)
   }
 
   function updateEnvelope(id: string, patch: Partial<Envelope>) {
@@ -268,10 +328,11 @@ function App() {
   return (
     <div className="min-h-dvh bg-surface-base text-ink-body">
       <header className="border-b border-border-default">
-        <div className="mx-auto flex max-w-[1200px] items-center justify-between px-6 py-3">
+        <div className="mx-auto flex max-w-[1200px] items-center justify-between gap-3 px-4 py-3 sm:px-6">
           <h1 className="text-[16px] font-semibold text-ink-heading">Laken's Finance</h1>
-          <div className="flex items-center gap-4">
-            <span className="text-[12px] font-light tabular-nums text-ink-rose">
+          <div className="flex items-center gap-3 sm:gap-4">
+            {/* The hero card carries the month, so this detail line is desktop-only. */}
+            <span className="hidden text-[12px] font-light tabular-nums text-ink-rose sm:inline">
               {monthLabel} · ${profile.hourlyRate}/hr · HYSA {profile.hysaApy}%
             </span>
             <SignedIn>
@@ -299,25 +360,60 @@ function App() {
       </SignedOut>
 
       <SignedIn>
-      <main className="mx-auto max-w-[1200px] space-y-4 px-6 py-4">
-        <section className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-          <StatTile label="Total Savings" value={currency(savingsTotal)} />
-          <StatTile label={`Income (${monthLabel.slice(0, 3)})`} value={currency(monthNet)} />
-          <StatTile
-            label="Effective Tax Rate"
-            value={taxRate === null ? '—' : `${taxRate}%${latest?.grossEstimated ? ' est.' : ''}`}
+      <main className="mx-auto max-w-[1200px] space-y-4 px-4 py-4 sm:px-6">
+        <section className="rounded-apple border border-border-default bg-surface-tint p-5 sm:p-6">
+          <p className="text-[14px] text-ink-rose">
+            {greeting}, {firstName} 🌸
+          </p>
+          <p className="mt-1 text-[15px] text-pretty text-ink-body">You've put away</p>
+          <p className="mt-0.5 text-[34px] leading-tight font-semibold tabular-nums text-ink-heading sm:text-[40px]">
+            {currency(savingsTotal)}
+          </p>
+          <p className="mt-1.5 text-[13px] text-pretty text-ink-caption">
+            {savedThisMonth > 0 ? (
+              <>
+                <span className="font-medium text-ink-rose">
+                  {currency(savedThisMonth)} of it this month
+                </span>{' '}
+                — across savings, sinking funds, and interest.
+              </>
+            ) : (
+              <>across savings, sinking funds, and interest. Add a paycheck to grow it.</>
+            )}
+          </p>
+        </section>
+
+        <section className="grid grid-cols-1 gap-3 sm:grid-cols-3 sm:gap-4">
+          <PersonalCard
+            label={`Brought home in ${monthName}`}
+            value={currency(monthNet)}
+            note={
+              monthChecks.length === 0
+                ? 'no paychecks logged yet'
+                : `from ${monthChecks.length} paycheck${monthChecks.length === 1 ? '' : 's'}`
+            }
           />
-          <StatTile
-            label="HYSA Interest"
+          <PersonalCard
+            label="Taxes took"
+            value={taxRate === null ? '—' : `${taxRate}%`}
+            note={
+              taxRate === null
+                ? 'add a check with hours to find out'
+                : `of your last check${latest?.grossEstimated ? ' (estimated)' : ''}`
+            }
+          />
+          <PersonalCard
+            label="Earned while you slept"
             value={`≈ ${currency(estMonthlyInterest)}/mo`}
-            note={`${currency(profile.hysaInterestToDate)} to date`}
+            note={`${currency(profile.hysaInterestToDate)} in interest so far`}
           />
         </section>
 
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
           <section className="rounded-apple border border-border-default bg-surface-tint p-5 lg:col-span-5">
             <h2 className="text-[15px] font-medium text-ink-heading">This Paycheck</h2>
-            <div className="mt-3 flex flex-wrap items-center gap-2">
+            {/* Stacked and full-width on phones; single row from sm up. */}
+            <div className="mt-3 grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
               <input
                 type="number"
                 inputMode="decimal"
@@ -326,8 +422,11 @@ function App() {
                 placeholder="Take-home $"
                 aria-label="Take-home paycheck amount"
                 value={amountInput}
-                onChange={(e) => setAmountInput(e.target.value)}
-                className={`${inputClass} w-32`}
+                onChange={(e) => {
+                  setAmountInput(e.target.value)
+                  setDuplicateOf(null)
+                }}
+                className={`${inputClass} w-full sm:w-32`}
               />
               <input
                 type="number"
@@ -338,24 +437,52 @@ function App() {
                 aria-label="Hours worked this check"
                 value={hoursInput}
                 onChange={(e) => setHoursInput(e.target.value)}
-                className={`${inputClass} w-24`}
+                className={`${inputClass} w-full sm:w-24`}
               />
               <input
                 type="date"
                 aria-label="Paycheck date"
                 value={dateInput}
-                onChange={(e) => setDateInput(e.target.value)}
-                className={inputClass}
+                onChange={(e) => {
+                  setDateInput(e.target.value)
+                  setDuplicateOf(null)
+                }}
+                className={`${inputClass} col-span-2 w-full sm:w-auto`}
               />
               <button
                 type="button"
                 onClick={addPaycheck}
-                className="rounded-apple bg-pink px-4 py-1.5 text-[14px] font-medium text-ink-heading hover:bg-pink-hover disabled:cursor-not-allowed disabled:opacity-50"
+                className="col-span-2 min-h-11 w-full rounded-apple bg-pink px-4 text-[15px] font-medium text-ink-heading hover:bg-pink-hover disabled:cursor-not-allowed disabled:opacity-50 sm:min-h-0 sm:w-auto sm:py-1.5 sm:text-[14px]"
               >
                 Add
               </button>
             </div>
-            {formError && <p className="mt-2 text-[12px] text-accent">{formError}</p>}
+            {formError && <p className="mt-2 text-[13px] text-accent sm:text-[12px]">{formError}</p>}
+            {duplicateOf && (
+              <div className="mt-3 rounded-apple border border-accent/40 bg-surface-tint p-3">
+                <p className="text-[13px] text-pretty text-ink-body">
+                  You already logged{' '}
+                  <span className="font-medium tabular-nums">{currency(duplicateOf.net)}</span> on{' '}
+                  {duplicateOf.date}. Adding it again will double every allocation.
+                </p>
+                <div className="mt-2 flex flex-wrap items-center gap-4">
+                  <button
+                    type="button"
+                    onClick={() => commitPaycheck(Number.parseFloat(amountInput))}
+                    className={`${tapClass} text-[13px] font-medium text-accent hover:text-accent-hover`}
+                  >
+                    Add anyway
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDuplicateOf(null)}
+                    className={`${tapClass} text-[13px] text-ink-caption`}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
             {preview && preview.net > preview.gross && (
               <p className="mt-2 text-[12px] text-ink-rose">
                 More than gross for {hoursOrNull ?? profile.typicalHours} hrs ({currency(preview.gross)}) —
@@ -400,8 +527,10 @@ function App() {
               </div>
               <div className="mt-3 space-y-2">
                 {savingsRows.map((row) => (
-                  <div key={row.id} className="flex items-center gap-3">
-                    <span className="w-32 shrink-0 truncate text-[12px] text-ink-body">{row.label}</span>
+                  <div key={row.id} className="flex items-center gap-2 sm:gap-3">
+                    <span className="w-24 shrink-0 truncate text-[13px] text-ink-body sm:w-32 sm:text-[12px]">
+                      {row.label}
+                    </span>
                     <div className="h-4 flex-1 overflow-hidden rounded-[4px] bg-surface-tint">
                       <div
                         className="h-full rounded-[4px]"
@@ -411,7 +540,7 @@ function App() {
                         }}
                       />
                     </div>
-                    <span className="w-20 shrink-0 text-right text-[12px] tabular-nums text-ink-caption">
+                    <span className="w-[70px] shrink-0 text-right text-[12px] tabular-nums text-ink-caption sm:w-20">
                       {currency(row.amount)}
                     </span>
                   </div>
@@ -420,42 +549,80 @@ function App() {
             </section>
 
             <section className="rounded-apple border border-border-default p-5">
-              <div className="flex items-baseline justify-between">
+              <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
                 <h2 className="text-[15px] font-medium text-ink-heading">Sinking Funds</h2>
                 <span className="text-[11px] font-light text-ink-caption">
                   each check auto-funds what the date needs
                 </span>
               </div>
-              <div className="mt-3 space-y-2.5">
-                {funds.map((fund) => {
-                  const progress = fund.target && fund.target > 0 ? Math.min(1, fund.current / fund.target) : null
-                  const perCheck = fund.perCheck > 0 ? fund.perCheck : neededPerCheck(fund, now, profile)
+
+              {atRisk.length > 0 && (
+                <div className="mt-3 rounded-apple border border-accent/40 bg-surface-tint p-3">
+                  <p className="text-[13px] font-medium text-accent">
+                    {atRisk.length} fund{atRisk.length === 1 ? '' : 's'} need
+                    {atRisk.length === 1 ? 's' : ''} attention
+                  </p>
+                  <ul className="mt-1.5 space-y-1">
+                    {atRisk.map(({ fund, status }) => (
+                      <li key={fund.id} className="text-[13px] text-pretty text-ink-body sm:text-[12px]">
+                        <span className="font-medium">{fund.name}</span> — {riskAdvice(fund, status)}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              <div className="mt-3 space-y-3">
+                {fundViews.map(({ fund, status }) => {
+                  const progress =
+                    fund.target && fund.target > 0 ? Math.min(1, fund.current / fund.target) : null
                   return (
-                    <div key={fund.id} className="flex items-center gap-3">
-                      <span className="w-32 shrink-0 truncate text-[12px] text-ink-body">{fund.name}</span>
-                      <div className="h-2 flex-1 overflow-hidden rounded-full bg-surface-tint">
+                    <div key={fund.id}>
+                      {/* Name and status ride above the bar so nothing is cramped on a phone. */}
+                      <div className="flex items-baseline justify-between gap-2">
+                        <span className="truncate text-[13px] text-ink-body sm:text-[12px]">{fund.name}</span>
+                        <StatusChip state={status.state} />
+                      </div>
+                      <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-surface-tint">
                         {progress !== null && (
-                          <div className="h-full rounded-full bg-pink" style={{ width: `${progress * 100}%` }} />
+                          <div
+                            className="h-full rounded-full"
+                            style={{
+                              width: `${progress * 100}%`,
+                              background: status.state === 'behind' || status.state === 'overdue' ? LEFTOVER_COLOR : '#ff8da1',
+                            }}
+                          />
                         )}
                       </div>
-                      <span className="w-44 shrink-0 text-right text-[11px] tabular-nums text-ink-caption">
+                      <p className="mt-1 text-[12px] tabular-nums text-ink-caption sm:text-[11px]">
                         {fund.target
                           ? `${currency(fund.current)} of ${currency(fund.target)}${
-                              perCheck && perCheck > 0 ? ` · ${currency(perCheck)}/check` : ''
-                            }`
+                              status.contributing > 0 ? ` · ${currency(status.contributing)}/check` : ''
+                            }${fund.deadline ? ` · by ${fund.deadline}` : ''}`
                           : 'no target set'}
-                      </span>
+                      </p>
                     </div>
                   )
                 })}
               </div>
+
+              {fundsDraw > 0 && (
+                <p className="mt-3 border-t border-border-default pt-3 text-[12px] text-pretty text-ink-caption sm:text-[11px]">
+                  All funds together take{' '}
+                  <span className="font-medium tabular-nums text-ink-rose">{currency(fundsDraw)}</span> per
+                  check
+                  {fundsShare !== null && ` — about ${Math.round(fundsShare * 100)}% of a typical take-home`}.
+                </p>
+              )}
             </section>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <details className="rounded-apple border border-border-default p-4">
-            <summary className="cursor-pointer text-[14px] font-medium text-ink-heading">Envelopes</summary>
+            <summary className="min-h-11 cursor-pointer text-[15px] font-medium text-ink-heading sm:min-h-0 sm:text-[14px]">
+              Envelopes
+            </summary>
             <div className="mt-3 space-y-3">
               {envelopes.map((env) => (
                 <div key={env.id} className="border-b border-border-default pb-3 last:border-b-0 last:pb-0">
@@ -470,12 +637,13 @@ function App() {
                     <button
                       type="button"
                       onClick={() => setEnvelopes(envelopes.filter((e) => e.id !== env.id))}
-                      className="shrink-0 text-[12px] text-ink-rose hover:text-accent"
+                      className={`${tapClass} shrink-0 px-1 text-[13px] text-ink-rose hover:text-accent sm:text-[12px]`}
                     >
                       Remove
                     </button>
                   </div>
-                  <div className="mt-1.5 flex items-center gap-2">
+                  {/* Wraps rather than overflowing once the phone runs out of width. */}
+                  <div className="mt-1.5 flex flex-wrap items-center gap-2">
                     <select
                       aria-label={`${env.name} rule type`}
                       value={env.kind}
@@ -529,7 +697,7 @@ function App() {
                     },
                   ])
                 }
-                className="text-[13px] font-medium text-accent hover:text-accent-hover"
+                className={`${tapClass} text-[14px] font-medium text-accent hover:text-accent-hover sm:text-[13px]`}
               >
                 + Add envelope
               </button>
@@ -537,7 +705,7 @@ function App() {
           </details>
 
           <details className="rounded-apple border border-border-default p-4">
-            <summary className="cursor-pointer text-[14px] font-medium text-ink-heading">
+            <summary className="min-h-11 cursor-pointer text-[15px] font-medium text-ink-heading sm:min-h-0 sm:text-[14px]">
               Settings & Funds
             </summary>
             <div className="mt-3 space-y-3">
@@ -549,8 +717,8 @@ function App() {
               <div className="space-y-3 border-t border-border-default pt-3">
                 {funds.map((fund) => (
                   <div key={fund.id}>
-                    <p className="text-[12px] text-ink-body">{fund.name}</p>
-                    <div className="mt-1 flex items-center gap-2">
+                    <p className="text-[13px] text-ink-body sm:text-[12px]">{fund.name}</p>
+                    <div className="mt-1 flex flex-wrap items-center gap-2">
                       <label className="flex items-center gap-1 text-[11px] text-ink-caption">
                         saved
                         <input type="number" min="0" aria-label={`${fund.name} current`} value={Math.round(fund.current * 100) / 100} onChange={(e) => updateFund(fund.id, { current: num(e.target.value) })} className={`${editorInputClass} w-20`} />
@@ -570,60 +738,197 @@ function App() {
             </div>
           </details>
 
-          <details className="rounded-apple border border-border-default p-4">
-            <summary className="cursor-pointer text-[14px] font-medium text-ink-heading">
-              Recent Paychecks
-            </summary>
-            {paychecks.length === 0 ? (
-              <p className="mt-3 text-[12px] font-light text-pretty text-ink-caption">
-                None yet. Removing one reverses its allocations.
-              </p>
-            ) : (
-              <ul className="mt-3 space-y-2">
-                {paychecks.map((check) => (
-                  <li key={check.id} className="flex items-center justify-between gap-3">
-                    <span className="text-[13px] tabular-nums text-ink-body">
-                      {check.date} · {currency(check.net)}
-                      {check.hours !== null && (
-                        <span className="text-[11px] font-light text-ink-caption"> · {check.hours} hrs</span>
-                      )}
-                    </span>
-                    {removingId === check.id ? (
-                      <span className="flex shrink-0 items-center gap-3">
-                        <button type="button" onClick={() => removePaycheck(check)} className="text-[12px] font-medium text-accent">
-                          Confirm
-                        </button>
-                        <button type="button" onClick={() => setRemovingId(null)} className="text-[12px] text-ink-caption">
-                          Cancel
-                        </button>
-                      </span>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => setRemovingId(check.id)}
-                        className="shrink-0 text-[12px] text-ink-rose hover:text-accent"
-                      >
-                        Remove
-                      </button>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </details>
         </div>
+
+        <details className="rounded-apple border border-border-default p-4" open>
+          <summary className="min-h-11 cursor-pointer text-[15px] font-medium text-ink-heading sm:min-h-0 sm:text-[14px]">
+            Paycheck History
+          </summary>
+          {paychecks.length === 0 ? (
+            <p className="mt-3 text-[13px] font-light text-pretty text-ink-caption sm:text-[12px]">
+              None yet. Add one above — you can always remove it, which reverses its allocations.
+            </p>
+          ) : (
+            <ul className="mt-3 divide-y divide-border-default">
+              {paychecks.map((check) => (
+                <PaycheckRow
+                  key={check.id}
+                  check={check}
+                  profile={profile}
+                  envelopeNames={envelopeNames}
+                  fundNames={fundNames}
+                  expanded={expandedId === check.id}
+                  onToggle={() => setExpandedId(expandedId === check.id ? null : check.id)}
+                  removing={removingId === check.id}
+                  onAskRemove={() => setRemovingId(check.id)}
+                  onCancelRemove={() => setRemovingId(null)}
+                  onConfirmRemove={() => removePaycheck(check)}
+                />
+              ))}
+            </ul>
+          )}
+        </details>
       </main>
       </SignedIn>
     </div>
   )
 }
 
-function StatTile({ label, value, note }: { label: string; value: string; note?: string }) {
+const STATUS_LABELS: Record<FundStatus['state'], string | null> = {
+  done: 'funded',
+  overdue: 'past due',
+  behind: 'behind',
+  stalled: 'not funding',
+  onTrack: null,
+  noTarget: null,
+}
+
+function StatusChip({ state }: { state: FundStatus['state'] }) {
+  const label = STATUS_LABELS[state]
+  if (label === null) return null
+  const tone =
+    state === 'done'
+      ? 'bg-surface-tint text-ink-rose'
+      : 'bg-accent/10 text-accent'
+  return (
+    <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ${tone}`}>{label}</span>
+  )
+}
+
+/** Plain-language next step for a fund that needs attention. */
+function riskAdvice(fund: Fund, status: FundStatus): string {
+  if (status.state === 'overdue') {
+    return `its ${fund.deadline} date has passed with ${currency(status.remaining)} still to go.`
+  }
+  if (status.state === 'stalled') {
+    return 'it has a target but no date, so nothing is being set aside. Add a date or a $/check amount.'
+  }
+  const needed = status.needed
+  if (needed === null) return 'it needs a closer look.'
+  return `set to ${currency(status.contributing)}/check but needs ${currency(
+    needed,
+  )} to make ${fund.deadline}. Raise it by ${currency(status.shortfall)} or set $/chk to 0 for auto.`
+}
+
+function PaycheckRow({
+  check,
+  profile,
+  envelopeNames,
+  fundNames,
+  expanded,
+  onToggle,
+  removing,
+  onAskRemove,
+  onCancelRemove,
+  onConfirmRemove,
+}: {
+  check: Paycheck
+  profile: Profile
+  envelopeNames: Map<string, string>
+  fundNames: Map<string, string>
+  expanded: boolean
+  onToggle: () => void
+  removing: boolean
+  onAskRemove: () => void
+  onCancelRemove: () => void
+  onConfirmRemove: () => void
+}) {
+  const gross = grossOf(check, profile)
+  const rate = effectiveTaxRate(check.net, gross)
+  /* Names come from current state, so a since-renamed envelope still resolves;
+     a since-deleted one falls back to its id rather than vanishing. */
+  const lines = [
+    ...Object.entries(check.envelopeAmounts).map(([id, amount]) => ({
+      id,
+      label: envelopeNames.get(id) ?? id,
+      amount,
+    })),
+    ...Object.entries(check.fundAmounts).map(([id, amount]) => ({
+      id: `fund:${id}`,
+      label: fundNames.get(id) ?? id,
+      amount,
+    })),
+  ].sort((a, b) => b.amount - a.amount)
+
+  return (
+    <li className="py-2">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={expanded}
+        className="flex min-h-11 w-full items-center justify-between gap-3 text-left sm:min-h-0"
+      >
+        <span className="text-[14px] tabular-nums text-ink-body sm:text-[13px]">
+          {check.date} · {currency(check.net)}
+          {check.hours !== null && (
+            <span className="text-[12px] font-light text-ink-caption sm:text-[11px]">
+              {' '}
+              · {check.hours} hrs
+            </span>
+          )}
+        </span>
+        <span className="shrink-0 text-[12px] text-ink-rose">{expanded ? 'Hide' : 'Details'}</span>
+      </button>
+
+      {expanded && (
+        <div className="mt-2 rounded-apple bg-surface-tint p-3">
+          <p className="text-[12px] tabular-nums text-ink-caption sm:text-[11px]">
+            Gross {currency(gross)}
+            {check.grossEstimated ? ' (estimated)' : ` (exact, ${check.hours} hrs)`}
+            {rate !== null && ` · taxes took ${Math.round(rate * 100)}%`}
+          </p>
+          <ul className="mt-2 space-y-1">
+            {lines.map((line) => (
+              <li key={line.id} className="flex items-baseline justify-between gap-3 text-[13px] sm:text-[12px]">
+                <span className="truncate text-ink-body">{line.label}</span>
+                <span className="shrink-0 tabular-nums text-ink-caption">{currency(line.amount)}</span>
+              </li>
+            ))}
+            <li className="flex items-baseline justify-between gap-3 border-t border-border-default pt-1 text-[13px] sm:text-[12px]">
+              <span className="text-ink-body">Stayed in checking</span>
+              <span className="shrink-0 tabular-nums text-ink-rose">{currency(check.leftover)}</span>
+            </li>
+          </ul>
+          <div className="mt-3 flex flex-wrap items-center gap-4">
+            {removing ? (
+              <>
+                <button
+                  type="button"
+                  onClick={onConfirmRemove}
+                  className={`${tapClass} text-[13px] font-medium text-accent`}
+                >
+                  Confirm remove
+                </button>
+                <button
+                  type="button"
+                  onClick={onCancelRemove}
+                  className={`${tapClass} text-[13px] text-ink-caption`}
+                >
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={onAskRemove}
+                className={`${tapClass} text-[13px] text-ink-rose hover:text-accent`}
+              >
+                Remove this paycheck
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </li>
+  )
+}
+
+function PersonalCard({ label, value, note }: { label: string; value: string; note: string }) {
   return (
     <div className="rounded-apple border border-border-default bg-surface-base p-4">
-      <p className="text-[12px] text-ink-caption">{label}</p>
-      <p className="mt-1 text-[21px] font-semibold tabular-nums text-ink-heading">{value}</p>
-      {note && <p className="mt-0.5 text-[11px] font-light text-ink-caption">{note}</p>}
+      <p className="text-[13px] text-ink-body sm:text-[12px]">{label}</p>
+      <p className="mt-1 text-[22px] font-semibold tabular-nums text-ink-heading">{value}</p>
+      <p className="mt-0.5 text-[12px] font-light text-pretty text-ink-caption sm:text-[11px]">{note}</p>
     </div>
   )
 }

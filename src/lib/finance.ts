@@ -178,6 +178,75 @@ export function neededPerCheck(fund: Fund, now: Date, profile: Profile): number 
   return (weekly * 52) / 12 / Math.max(1, profile.checksPerMonth)
 }
 
+/**
+ * Where a fund stands against its deadline.
+ *
+ * A fund on auto-funding can't fall behind — `buildPaycheck` contributes
+ * exactly what the deadline needs each check. So `behind` only fires when a
+ * manual $/check override is set below that. `stalled` catches the quiet
+ * trap: a target with no deadline and no override gets nothing, forever.
+ */
+export type FundState = 'done' | 'overdue' | 'behind' | 'stalled' | 'onTrack' | 'noTarget'
+
+export type FundStatus = {
+  state: FundState
+  /** Required per check to land the target by the deadline. */
+  needed: number | null
+  /** What it actually receives per check. */
+  contributing: number
+  /** needed − contributing, when behind. */
+  shortfall: number
+  remaining: number
+}
+
+export function fundStatus(fund: Fund, now: Date, profile: Profile): FundStatus {
+  const needed = neededPerCheck(fund, now, profile)
+  const contributing = fund.perCheck > 0 ? fund.perCheck : (needed ?? 0)
+  const remaining = fund.target !== null ? Math.max(0, fund.target - fund.current) : 0
+  const base = { needed, contributing, shortfall: 0, remaining }
+
+  if (fund.target === null || fund.target <= 0) return { ...base, state: 'noTarget' }
+  if (fund.current >= fund.target) return { ...base, state: 'done' }
+
+  const end = deadlineDate(fund)
+  if (end !== null && end.getTime() < now.getTime()) return { ...base, state: 'overdue' }
+  if (end === null && fund.perCheck <= 0) return { ...base, state: 'stalled' }
+  if (needed !== null && contributing < needed - 0.005) {
+    return { ...base, state: 'behind', shortfall: needed - contributing }
+  }
+  return { ...base, state: 'onTrack' }
+}
+
+/** Combined per-check draw of every fund, for the affordability note. */
+export function fundsPerCheckTotal(funds: Fund[], now: Date, profile: Profile): number {
+  return funds.reduce((sum, fund) => sum + fundStatus(fund, now, profile).contributing, 0)
+}
+
+/** Typical take-home, using her learned withholding when we have it. */
+export function typicalNet(profile: Profile, withholding: number | null): number | null {
+  if (withholding === null) return null
+  return grossForCheck(profile, null) * (1 - withholding)
+}
+
+/** Same day and same amount — almost certainly the same deposit entered twice. */
+export function findDuplicate(paychecks: Paycheck[], date: string, net: number): Paycheck | null {
+  return paychecks.find((p) => p.date === date && Math.abs(p.net - net) < 0.005) ?? null
+}
+
+/** Takes net and gross explicitly — stored checks from before `gross` existed
+ *  can carry undefined at runtime, so callers resolve the fallback first. */
+export function effectiveTaxRate(net: number, gross: number | null): number | null {
+  if (gross === null || !Number.isFinite(gross) || gross <= 0 || net > gross) return null
+  return 1 - net / gross
+}
+
+/** Gross for a stored check, falling back to rate × hours for legacy records. */
+export function grossOf(check: Paycheck, profile: Profile): number {
+  return Number.isFinite(check.gross) && check.gross > 0
+    ? check.gross
+    : grossForCheck(profile, check.hours)
+}
+
 export function currency(n: number): string {
   return n.toLocaleString('en-US', { style: 'currency', currency: 'USD' })
 }
