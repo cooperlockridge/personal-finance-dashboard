@@ -60,7 +60,7 @@ export const DEFAULT_PROFILE: Profile = {
 export const DEFAULT_ENVELOPES: Envelope[] = [
   { id: 'wedding', name: 'Wedding Savings', kind: 'percentNet', value: 10, balance: 2972.69, countsAsSavings: true, remaining: null },
   { id: 'general', name: 'General Savings', kind: 'percentNet', value: 20, balance: 25271.32, countsAsSavings: true, remaining: null },
-  { id: 'giving', name: 'Giving Savings', kind: 'percentNet', value: 5, balance: 335.33, countsAsSavings: false, remaining: null },
+  { id: 'giving', name: 'Gifts', kind: 'percentNet', value: 5, balance: 335.33, countsAsSavings: true, remaining: null },
   { id: 'expenses', name: 'Expenses', kind: 'percentNet', value: 10, balance: 79.48, countsAsSavings: false, remaining: null },
   { id: 'car', name: 'Car Payment', kind: 'fixedPerCheck', value: 125, balance: 0, countsAsSavings: false, remaining: 3000 },
   { id: 'roth', name: 'Roth IRA', kind: 'percentGross', value: 10, balance: 3067, countsAsSavings: true, remaining: null },

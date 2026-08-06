@@ -143,19 +143,26 @@ function App() {
      fund (it's her name on the spreadsheet). Idempotent — guarded on the
      old records still existing. */
   useEffect(() => {
-    if (envelopes.some((e) => e.id === 'challenge')) {
-      setEnvelopes(
-        envelopes
-          .filter((e) => e.id !== 'challenge')
-          .map((e) =>
-            e.id === 'general'
-              ? { ...e, balance: e.balance + 313 }
-              : e.id === 'wedding'
-                ? { ...e, balance: e.balance + 300 }
-                : e,
-          ),
+    let next = envelopes
+    if (next.some((e) => e.id === 'challenge')) {
+      next = next
+        .filter((e) => e.id !== 'challenge')
+        .map((e) =>
+          e.id === 'general'
+            ? { ...e, balance: e.balance + 313 }
+            : e.id === 'wedding'
+              ? { ...e, balance: e.balance + 300 }
+              : e,
+        )
+    }
+    /* Aug 6, 2026: Giving renamed to Gifts and included in savings. Guarded on
+       the old flag so a later manual rename is never clobbered. */
+    if (next.some((e) => e.id === 'giving' && !e.countsAsSavings)) {
+      next = next.map((e) =>
+        e.id === 'giving' && !e.countsAsSavings ? { ...e, name: 'Gifts', countsAsSavings: true } : e,
       )
     }
+    if (next !== envelopes) setEnvelopes(next)
     if (funds.some((f) => f.id === 'craft')) {
       setFunds(funds.filter((f) => f.id !== 'craft'))
     }
