@@ -38,9 +38,9 @@ const ENTITY_SLOTS: Record<string, number> = {
   roth: 5,
 }
 const FUNDS_SLOT = 6
-/* Neutral by design — "unallocated" is not a series; validated visible on the
-   tint surface and CVD-distinct from both donut neighbors. */
-const LEFTOVER_COLOR = '#898781'
+/* Deep rose (the app accent) — validated visible on the tint surface and
+   CVD-distinct from both donut neighbors (violet, blue). */
+const LEFTOVER_COLOR = '#c03760'
 
 type Slice = { id: string; label: string; amount: number; color: string }
 
