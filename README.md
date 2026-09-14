@@ -35,6 +35,8 @@ Then open the printed localhost URL in your browser.
 - Weekly post-tax paycheck entry with a live allocation split
 - Editable percentage envelopes (defaults: Rent & Bills 50 / Savings 20 / Spending 30)
 - Paycheck profile (hourly rate, typical hours) with derived gross and effective tax rate
+- Sinking funds with a start date and a deadline day; each check auto-funds what the date needs
+- Random savings: roll a whole-dollar amount in your range (or type one) and log it as extra savings
 - Paychecks persist in `localStorage` on the device
 
 ## Roadmap

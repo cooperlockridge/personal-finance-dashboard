@@ -26,8 +26,11 @@ export type Fund = {
   name: string
   target: number | null
   current: number
-  /** 'YYYY-MM' deadline, contributions due by end of that month. */
+  /** 'YYYY-MM-DD', contributions due by that day. Records from before
+   *  Sep 2026 carry 'YYYY-MM', which means the end of that month. */
   deadline: string | null
+  /** 'YYYY-MM-DD'. Checks dated before this skip the fund entirely. */
+  startDate?: string | null
   perCheck: number
   note?: string
 }
@@ -45,6 +48,17 @@ export type Paycheck = {
   fundAmounts: Record<string, number>
   leftover: number
 }
+
+/** Money put away on a whim, outside the paycheck split. */
+export type ExtraSaving = {
+  id: string
+  date: string
+  amount: number
+  /** True when the amount came from a roll rather than being typed. */
+  rolled: boolean
+}
+
+export type RollRange = { min: number; max: number }
 
 export const DEFAULT_PROFILE: Profile = {
   hourlyRate: 25,
@@ -66,13 +80,14 @@ export const DEFAULT_ENVELOPES: Envelope[] = [
   { id: 'roth', name: 'Roth IRA', kind: 'percentGross', value: 10, balance: 3067, countsAsSavings: true, remaining: null },
 ]
 
+/* Laken's Aug 8, 2026 email: every fund goes except Christmas — $1,000 by
+   Dec 11, 2026, then $1,500 collected Jan 8 through Dec 10, 2027. */
 export const DEFAULT_FUNDS: Fund[] = [
-  { id: 'christmas', name: 'Christmas', target: 1000, current: 600, deadline: '2026-12', perCheck: 40 },
-  { id: 'phone', name: 'New Phone', target: 1200, current: 0, deadline: '2027-07', perCheck: 0, note: 'Target is a placeholder — set the real price incl. tax' },
-  { id: 'italy', name: 'Italy Plane Ticket', target: 1500, current: 0, deadline: '2027-08', perCheck: 0 },
-  { id: 'moveout', name: 'Move Out', target: 2500, current: 0, deadline: '2028-01', perCheck: 0 },
-  { id: 'band', name: 'Wedding Band', target: 1500, current: 0, deadline: '2028-03', perCheck: 0 },
+  { id: 'christmas', name: 'Christmas 2026', target: 1000, current: 600, deadline: '2026-12-11', perCheck: 0 },
+  { id: 'christmas-2027', name: 'Christmas 2027', target: 1500, current: 0, deadline: '2027-12-10', startDate: '2027-01-08', perCheck: 0 },
 ]
+
+export const DEFAULT_ROLL_RANGE: RollRange = { min: 5, max: 50 }
 
 export function grossForCheck(profile: Profile, hours: number | null): number {
   return profile.hourlyRate * (hours ?? profile.typicalHours)
@@ -125,9 +140,11 @@ export function buildPaycheck(
     if (amount > 0) envelopeAmounts[env.id] = amount
     allocated += amount
   }
-  /* Funds auto-contribute what their deadline needs; a manual $/check overrides. */
+  /* Funds auto-contribute what their deadline needs; a manual $/check overrides.
+     A fund whose start date is still ahead takes nothing from this check. */
   const checkDate = new Date(`${date}T00:00:00`)
   for (const fund of funds) {
+    if (!hasStarted(fund, checkDate)) continue
     const auto = neededPerCheck(fund, checkDate, profile)
     const amount =
       fund.perCheck > 0
@@ -153,17 +170,26 @@ export function buildPaycheck(
   }
 }
 
-/** End of the fund's deadline month. */
-export function deadlineDate(fund: Fund): Date | null {
-  if (!fund.deadline) return null
-  const [year, month] = fund.deadline.split('-').map(Number)
-  return new Date(year, month, 0)
+/** 'YYYY-MM-DD' as local midnight; a month-only 'YYYY-MM' as that month's last day. */
+function parseDay(value: string): Date {
+  const [year, month, day] = value.split('-').map(Number)
+  return day ? new Date(year, month - 1, day) : new Date(year, month, 0)
 }
 
+export function deadlineDate(fund: Fund): Date | null {
+  return fund.deadline ? parseDay(fund.deadline) : null
+}
+
+export function hasStarted(fund: Fund, now: Date): boolean {
+  return !fund.startDate || parseDay(fund.startDate).getTime() <= now.getTime()
+}
+
+/** Weeks of saving left — counted from the start date while that is still ahead. */
 export function weeksLeft(fund: Fund, now: Date): number | null {
   const end = deadlineDate(fund)
   if (!end) return null
-  return Math.max(1, (end.getTime() - now.getTime()) / (7 * 24 * 3600 * 1000))
+  const from = hasStarted(fund, now) ? now : parseDay(fund.startDate as string)
+  return Math.max(1, (end.getTime() - from.getTime()) / (7 * 24 * 3600 * 1000))
 }
 
 export function neededPerWeek(fund: Fund, now: Date): number | null {
@@ -185,14 +211,16 @@ export function neededPerCheck(fund: Fund, now: Date, profile: Profile): number 
  * exactly what the deadline needs each check. So `behind` only fires when a
  * manual $/check override is set below that. `stalled` catches the quiet
  * trap: a target with no deadline and no override gets nothing, forever.
+ * `upcoming` is a fund whose start date is still ahead: it draws nothing
+ * yet, and `needed` is what each check will take once it starts.
  */
-export type FundState = 'done' | 'overdue' | 'behind' | 'stalled' | 'onTrack' | 'noTarget'
+export type FundState = 'done' | 'overdue' | 'behind' | 'stalled' | 'upcoming' | 'onTrack' | 'noTarget'
 
 export type FundStatus = {
   state: FundState
   /** Required per check to land the target by the deadline. */
   needed: number | null
-  /** What it actually receives per check. */
+  /** What it actually receives per check — nothing before its start date. */
   contributing: number
   /** needed − contributing, when behind. */
   shortfall: number
@@ -200,13 +228,15 @@ export type FundStatus = {
 }
 
 export function fundStatus(fund: Fund, now: Date, profile: Profile): FundStatus {
+  const started = hasStarted(fund, now)
   const needed = neededPerCheck(fund, now, profile)
-  const contributing = fund.perCheck > 0 ? fund.perCheck : (needed ?? 0)
+  const contributing = !started ? 0 : fund.perCheck > 0 ? fund.perCheck : (needed ?? 0)
   const remaining = fund.target !== null ? Math.max(0, fund.target - fund.current) : 0
   const base = { needed, contributing, shortfall: 0, remaining }
 
   if (fund.target === null || fund.target <= 0) return { ...base, state: 'noTarget' }
   if (fund.current >= fund.target) return { ...base, state: 'done' }
+  if (!started) return { ...base, state: 'upcoming' }
 
   const end = deadlineDate(fund)
   if (end !== null && end.getTime() < now.getTime()) return { ...base, state: 'overdue' }
@@ -233,6 +263,19 @@ export function findDuplicate(paychecks: Paycheck[], date: string, net: number):
   return paychecks.find((p) => p.date === date && Math.abs(p.net - net) < 0.005) ?? null
 }
 
+/**
+ * A whole-dollar amount between the range ends, inclusive. Never repeats
+ * `previous` when the range holds another value — a reroll that lands on the
+ * same number reads as a broken button.
+ */
+export function rollAmount(range: RollRange, previous: number | null, random = Math.random): number {
+  const lo = Math.max(1, Math.ceil(Math.min(range.min, range.max)))
+  const hi = Math.max(lo, Math.floor(Math.max(range.min, range.max)))
+  const amount = lo + Math.floor(random() * (hi - lo + 1))
+  if (amount !== previous || lo === hi) return amount
+  return amount === hi ? lo : amount + 1
+}
+
 /** Takes net and gross explicitly — stored checks from before `gross` existed
  *  can carry undefined at runtime, so callers resolve the fallback first. */
 export function effectiveTaxRate(net: number, gross: number | null): number | null {
@@ -249,6 +292,23 @@ export function grossOf(check: Paycheck, profile: Profile): number {
 
 export function currency(n: number): string {
   return n.toLocaleString('en-US', { style: 'currency', currency: 'USD' })
+}
+
+/** Today as 'YYYY-MM-DD' on her clock. `toISOString()` is UTC, which in
+ *  Georgia already reads as tomorrow by the evening. */
+export function todayKey(now = new Date()): string {
+  const month = String(now.getMonth() + 1).padStart(2, '0')
+  const day = String(now.getDate()).padStart(2, '0')
+  return `${now.getFullYear()}-${month}-${day}`
+}
+
+/** 'Dec 11, 2026'; a month-only date reads 'Dec 2026'. */
+export function formatDay(value: string): string {
+  const [year, month, day] = value.split('-').map(Number)
+  return new Date(year, month - 1, day || 1).toLocaleDateString(
+    'en-US',
+    day ? { month: 'short', day: 'numeric', year: 'numeric' } : { month: 'short', year: 'numeric' },
+  )
 }
 
 export function usePersistentState<T>(key: string, initial: T) {

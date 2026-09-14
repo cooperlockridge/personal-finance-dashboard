@@ -4,22 +4,28 @@ import {
   DEFAULT_ENVELOPES,
   DEFAULT_FUNDS,
   DEFAULT_PROFILE,
+  DEFAULT_ROLL_RANGE,
   buildPaycheck,
   currency,
   effectiveTaxRate,
   findDuplicate,
+  formatDay,
   fundStatus,
   fundsPerCheckTotal,
   grossOf,
   learnedWithholding,
+  rollAmount,
+  todayKey,
   typicalNet,
   usePersistentState,
   type Envelope,
   type EnvelopeKind,
+  type ExtraSaving,
   type Fund,
   type FundStatus,
   type Paycheck,
   type Profile,
+  type RollRange,
 } from './lib/finance'
 
 /* 16px on phones keeps iOS Safari from zooming the page on focus; min-h-11
@@ -52,6 +58,15 @@ const FUNDS_SLOT = 6
 /* Deep rose (the app accent) — validated visible on the tint surface and
    CVD-distinct from both donut neighbors (violet, blue). */
 const LEFTOVER_COLOR = '#c03760'
+
+/* Funds removed per Laken's Aug 8, 2026 email. The names still label older
+   checks in Paycheck History. */
+const RETIRED_FUNDS = new Map([
+  ['phone', 'New Phone'],
+  ['italy', 'Italy Plane Ticket'],
+  ['moveout', 'Move Out'],
+  ['band', 'Wedding Band'],
+])
 
 type Slice = { id: string; label: string; amount: number; color: string }
 
@@ -162,9 +177,11 @@ function App() {
   const [envelopes, setEnvelopes] = usePersistentState<Envelope[]>('pfd2:envelopes', DEFAULT_ENVELOPES)
   const [funds, setFunds] = usePersistentState<Fund[]>('pfd2:funds', DEFAULT_FUNDS)
   const [paychecks, setPaychecks] = usePersistentState<Paycheck[]>('pfd2:paychecks', [])
+  const [extras, setExtras] = usePersistentState<ExtraSaving[]>('pfd2:extras', [])
+  const [rollRange, setRollRange] = usePersistentState<RollRange>('pfd2:rollRange', DEFAULT_ROLL_RANGE)
   const [amountInput, setAmountInput] = useState('')
   const [hoursInput, setHoursInput] = useState('')
-  const [dateInput, setDateInput] = useState(() => new Date().toISOString().slice(0, 10))
+  const [dateInput, setDateInput] = useState(() => todayKey())
   const [formError, setFormError] = useState('')
   const [removingId, setRemovingId] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<string | null>(null)
@@ -196,10 +213,44 @@ function App() {
         e.id === 'giving' && !e.countsAsSavings ? { ...e, name: 'Gifts', countsAsSavings: true } : e,
       )
     }
-    if (next !== envelopes) setEnvelopes(next)
-    if (funds.some((f) => f.id === 'craft')) {
-      setFunds(funds.filter((f) => f.id !== 'craft'))
+    let nextFunds = funds
+    if (nextFunds.some((f) => f.id === 'craft')) {
+      nextFunds = nextFunds.filter((f) => f.id !== 'craft')
     }
+    /* Sep 14, 2026, from Laken's Aug 8 email: every fund goes except
+       Christmas. Money already set aside in a removed fund folds into
+       General Savings so her total doesn't drop. Guarded on the old ids. */
+    const retired = nextFunds.filter((f) => RETIRED_FUNDS.has(f.id))
+    if (retired.length > 0) {
+      const moved = retired.reduce((s, f) => s + f.current, 0)
+      nextFunds = nextFunds.filter((f) => !RETIRED_FUNDS.has(f.id))
+      if (moved > 0) {
+        next = next.map((e) => (e.id === 'general' ? { ...e, balance: e.balance + moved } : e))
+      }
+    }
+    /* Same email: Christmas 2026 is $1,000 by Dec 11, then Christmas 2027
+       collects $1,500 from Jan 8 to Dec 10, 2027. Guarded on the old
+       month-only deadline. The seeded $40/check goes back to auto so the
+       date sets the pace; any other override she chose stays. */
+    if (nextFunds.some((f) => f.id === 'christmas' && f.deadline?.length === 7)) {
+      nextFunds = nextFunds.map((f) =>
+        f.id === 'christmas'
+          ? {
+              ...f,
+              name: f.name === 'Christmas' ? 'Christmas 2026' : f.name,
+              target: 1000,
+              deadline: '2026-12-11',
+              perCheck: f.perCheck === 40 ? 0 : f.perCheck,
+            }
+          : f,
+      )
+      const christmas2027 = DEFAULT_FUNDS.find((f) => f.id === 'christmas-2027')
+      if (christmas2027 && !nextFunds.some((f) => f.id === christmas2027.id)) {
+        nextFunds = [...nextFunds, christmas2027]
+      }
+    }
+    if (next !== envelopes) setEnvelopes(next)
+    if (nextFunds !== funds) setFunds(nextFunds)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -228,11 +279,13 @@ function App() {
   const latestRate = latest ? effectiveTaxRate(latest.net, grossOf(latest, profile)) : null
   const taxRate = latestRate === null ? null : Math.round(latestRate * 100)
 
+  const extrasTotal = extras.reduce((s, x) => s + x.amount, 0)
   const savingsRows = [
     ...envelopes
       .filter((e) => e.countsAsSavings)
       .map((e) => ({ id: e.id, label: e.name, amount: e.balance })),
     { id: 'funds', label: 'Sinking funds', amount: funds.reduce((s, f) => s + f.current, 0) },
+    ...(extrasTotal > 0 ? [{ id: 'extras', label: 'Random savings', amount: extrasTotal }] : []),
     { id: 'interest', label: 'HYSA interest', amount: profile.hysaInterestToDate },
   ].sort((a, b) => b.amount - a.amount)
   const savingsTotal = savingsRows.reduce((s, r) => s + r.amount, 0)
@@ -240,16 +293,18 @@ function App() {
   const generalBalance = envelopes.find((e) => e.id === 'general')?.balance ?? 0
   const estMonthlyInterest = (generalBalance * profile.hysaApy) / 100 / 12
 
-  /* What this month's checks actually moved into savings — every envelope
-     that counts as savings, plus every sinking-fund contribution. */
+  /* What this month actually moved into savings — every envelope that counts
+     as savings, every sinking-fund contribution, and every random saving. */
   const savingsEnvelopeIds = new Set(envelopes.filter((e) => e.countsAsSavings).map((e) => e.id))
-  const savedThisMonth = monthChecks.reduce((sum, check) => {
-    const toEnvelopes = Object.entries(check.envelopeAmounts)
-      .filter(([id]) => savingsEnvelopeIds.has(id))
-      .reduce((s, [, amount]) => s + amount, 0)
-    const toFunds = Object.values(check.fundAmounts).reduce((s, amount) => s + amount, 0)
-    return sum + toEnvelopes + toFunds
-  }, 0)
+  const savedThisMonth =
+    monthChecks.reduce((sum, check) => {
+      const toEnvelopes = Object.entries(check.envelopeAmounts)
+        .filter(([id]) => savingsEnvelopeIds.has(id))
+        .reduce((s, [, amount]) => s + amount, 0)
+      const toFunds = Object.values(check.fundAmounts).reduce((s, amount) => s + amount, 0)
+      return sum + toEnvelopes + toFunds
+    }, 0) +
+    extras.filter((x) => x.date.startsWith(monthKey)).reduce((s, x) => s + x.amount, 0)
 
   const fundViews = funds.map((fund) => ({ fund, status: fundStatus(fund, now, profile) }))
   const atRisk = fundViews.filter(
@@ -261,7 +316,10 @@ function App() {
   const fundsShare = estNet !== null && estNet > 0 ? fundsDraw / estNet : null
 
   const envelopeNames = new Map(envelopes.map((e) => [e.id, e.name]))
-  const fundNames = new Map(funds.map((f) => [f.id, f.name]))
+  const fundNames = new Map<string, string>([
+    ...RETIRED_FUNDS,
+    ...funds.map((f): [string, string] => [f.id, f.name]),
+  ])
 
   function addPaycheck() {
     const net = Number.parseFloat(amountInput)
@@ -303,10 +361,15 @@ function App() {
   }
 
   function removePaycheck(check: Paycheck) {
+    /* A retired fund's money moved into General Savings, so an older check
+       gives back its share for that fund from General instead. */
+    const retiredShare = Object.entries(check.fundAmounts)
+      .filter(([id]) => RETIRED_FUNDS.has(id))
+      .reduce((s, [, amount]) => s + amount, 0)
     setPaychecks(paychecks.filter((p) => p.id !== check.id))
     setEnvelopes(
       envelopes.map((env) => {
-        const amount = check.envelopeAmounts[env.id] ?? 0
+        const amount = (check.envelopeAmounts[env.id] ?? 0) + (env.id === 'general' ? retiredShare : 0)
         if (amount === 0) return env
         return env.remaining !== null
           ? { ...env, remaining: env.remaining + amount }
@@ -530,6 +593,13 @@ function App() {
           </section>
 
           <div className="space-y-4 lg:col-span-7">
+            <RandomSavings
+              extras={extras}
+              onChange={setExtras}
+              range={rollRange}
+              onRangeChange={setRollRange}
+            />
+
             <section className="rounded-apple border border-border-default p-5">
               <div className="flex items-baseline justify-between">
                 <h2 className="text-[15px] font-medium text-ink-heading">Savings Breakdown</h2>
@@ -605,11 +675,7 @@ function App() {
                         )}
                       </div>
                       <p className="mt-1 text-[12px] tabular-nums text-ink-caption sm:text-[11px]">
-                        {fund.target
-                          ? `${currency(fund.current)} of ${currency(fund.target)}${
-                              status.contributing > 0 ? ` · ${currency(status.contributing)}/check` : ''
-                            }${fund.deadline ? ` · by ${fund.deadline}` : ''}`
-                          : 'no target set'}
+                        {fundCaption(fund, status)}
                       </p>
                     </div>
                   )
@@ -789,6 +855,7 @@ const STATUS_LABELS: Record<FundStatus['state'], string | null> = {
   overdue: 'past due',
   behind: 'behind',
   stalled: 'not funding',
+  upcoming: 'upcoming',
   onTrack: null,
   noTarget: null,
 }
@@ -797,7 +864,7 @@ function StatusChip({ state }: { state: FundStatus['state'] }) {
   const label = STATUS_LABELS[state]
   if (label === null) return null
   const tone =
-    state === 'done'
+    state === 'done' || state === 'upcoming'
       ? 'bg-surface-tint text-ink-rose'
       : 'bg-accent/10 text-accent'
   return (
@@ -808,7 +875,7 @@ function StatusChip({ state }: { state: FundStatus['state'] }) {
 /** Plain-language next step for a fund that needs attention. */
 function riskAdvice(fund: Fund, status: FundStatus): string {
   if (status.state === 'overdue') {
-    return `its ${fund.deadline} date has passed with ${currency(status.remaining)} still to go.`
+    return `its ${formatDay(fund.deadline as string)} date has passed with ${currency(status.remaining)} still to go.`
   }
   if (status.state === 'stalled') {
     return 'it has a target but no date, so nothing is being set aside. Add a date or a $/check amount.'
@@ -817,7 +884,7 @@ function riskAdvice(fund: Fund, status: FundStatus): string {
   if (needed === null) return 'it needs a closer look.'
   return `set to ${currency(status.contributing)}/check but needs ${currency(
     needed,
-  )} to make ${fund.deadline}. Raise it by ${currency(status.shortfall)} or set $/chk to 0 for auto.`
+  )} to make ${formatDay(fund.deadline as string)}. Raise it by ${currency(status.shortfall)} or set $/chk to 0 for auto.`
 }
 
 function PaycheckRow({
@@ -930,6 +997,210 @@ function PaycheckRow({
         </div>
       )}
     </li>
+  )
+}
+
+/** The line under a fund's bar: progress, pace, and dates. */
+function fundCaption(fund: Fund, status: FundStatus): string {
+  if (!fund.target) return 'no target set'
+  const parts = [`${currency(fund.current)} of ${currency(fund.target)}`]
+  if (status.state === 'upcoming' && fund.startDate) {
+    parts.push(
+      status.needed !== null && status.needed > 0
+        ? `about ${currency(status.needed)}/check from ${formatDay(fund.startDate)}`
+        : `starts ${formatDay(fund.startDate)}`,
+    )
+  } else if (status.contributing > 0) {
+    parts.push(`${currency(status.contributing)}/check`)
+  }
+  if (fund.deadline) parts.push(`by ${formatDay(fund.deadline)}`)
+  return parts.join(' · ')
+}
+
+const RECENT_EXTRAS = 5
+
+/**
+ * Money put away on a whim. Roll lands a whole-dollar amount in her range —
+ * or she types her own — and Put away logs it for today. Lives beside the
+ * paycheck split rather than inside it, so it never changes an allocation.
+ */
+function RandomSavings({
+  extras,
+  onChange,
+  range,
+  onRangeChange,
+}: {
+  extras: ExtraSaving[]
+  onChange: (next: ExtraSaving[]) => void
+  range: RollRange
+  onRangeChange: (next: RollRange) => void
+}) {
+  const [amountInput, setAmountInput] = useState('')
+  /* The last number a roll landed on. An amount counts as rolled only while
+     the field still holds it, so a typed-over roll logs as typed. */
+  const [lastRoll, setLastRoll] = useState<number | null>(null)
+  /* Bumps on every roll; the amount remounts under a new key and the
+     pop-in replays. Zero means no roll yet, so nothing animates on load. */
+  const [rollCount, setRollCount] = useState(0)
+  const [error, setError] = useState('')
+  const [showAll, setShowAll] = useState(false)
+  const [removingId, setRemovingId] = useState<string | null>(null)
+
+  const amount = Number.parseFloat(amountInput)
+  const valid = Number.isFinite(amount) && amount > 0
+  const total = extras.reduce((s, x) => s + x.amount, 0)
+  const shown = showAll ? extras : extras.slice(0, RECENT_EXTRAS)
+
+  function roll() {
+    const next = rollAmount(range, lastRoll)
+    setLastRoll(next)
+    setAmountInput(String(next))
+    setRollCount((c) => c + 1)
+    setError('')
+  }
+
+  function putAway() {
+    if (!valid) {
+      setError('Roll an amount or type one in.')
+      return
+    }
+    const rounded = Math.round(amount * 100) / 100
+    onChange([
+      { id: crypto.randomUUID(), date: todayKey(), amount: rounded, rolled: rounded === lastRoll },
+      ...extras,
+    ])
+    setAmountInput('')
+    setLastRoll(null)
+    setError('')
+  }
+
+  return (
+    <section className="rounded-apple border border-border-default p-5">
+      <div className="flex items-baseline justify-between">
+        <h2 className="text-[15px] font-medium text-ink-heading">Random Savings</h2>
+        {total > 0 && <span className="text-[12px] tabular-nums text-ink-caption">{currency(total)} total</span>}
+      </div>
+
+      <div className="mt-3 flex items-center gap-2 sm:gap-3">
+        {/* The input drops its own outline; the field's border carries focus instead. */}
+        <label className="flex min-w-0 flex-1 items-baseline gap-1 rounded-apple border border-border-default bg-surface-tint px-4 py-1.5 focus-within:border-accent">
+          <span className="text-[26px] font-semibold text-ink-caption">$</span>
+          <span key={rollCount} className={`t-digit-group min-w-0 flex-1 ${rollCount > 0 ? 'is-animating' : ''}`}>
+            <span className="t-digit w-full">
+              <input
+                type="number"
+                inputMode="decimal"
+                min="0"
+                step="0.01"
+                placeholder="0"
+                aria-label="Amount to put away"
+                value={amountInput}
+                onChange={(e) => {
+                  setAmountInput(e.target.value)
+                  setError('')
+                }}
+                className="w-full bg-transparent text-[34px] leading-tight font-semibold tabular-nums text-ink-heading outline-none [appearance:textfield] placeholder:text-ink-caption/40 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+              />
+            </span>
+          </span>
+        </label>
+        <button
+          type="button"
+          onClick={roll}
+          aria-label="Roll a random amount"
+          className="min-h-11 shrink-0 rounded-apple border border-border-default bg-surface-base px-4 py-2.5 text-[15px] font-medium text-ink-heading hover:bg-surface-tint sm:text-[14px]"
+        >
+          🎲 Roll
+        </button>
+      </div>
+
+      <div className="mt-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+        <p className="flex items-center gap-1.5 text-[12px] text-ink-caption">
+          Rolls between $
+          <input
+            type="number"
+            min="1"
+            aria-label="Smallest roll"
+            value={range.min}
+            onChange={(e) => onRangeChange({ ...range, min: Number.parseFloat(e.target.value) || 0 })}
+            className={`${editorInputClass} w-16`}
+          />
+          and $
+          <input
+            type="number"
+            min="1"
+            aria-label="Largest roll"
+            value={range.max}
+            onChange={(e) => onRangeChange({ ...range, max: Number.parseFloat(e.target.value) || 0 })}
+            className={`${editorInputClass} w-16`}
+          />
+        </p>
+        <button
+          type="button"
+          onClick={putAway}
+          className={`${tapClass} text-[14px] font-medium text-accent hover:text-accent-hover sm:text-[13px]`}
+        >
+          {valid ? `Put away ${currency(amount)}` : 'Put away'}
+        </button>
+      </div>
+      {error && <p className="mt-1 text-[13px] text-accent sm:text-[12px]">{error}</p>}
+
+      {extras.length > 0 && (
+        <ul className="mt-3 divide-y divide-border-default border-t border-border-default">
+          {shown.map((x) => (
+            <li key={x.id} className="flex min-h-11 items-center justify-between gap-3 py-1 sm:min-h-0">
+              <span className="text-[14px] tabular-nums text-ink-body sm:text-[13px]">
+                {formatDay(x.date)} · {currency(x.amount)}
+                {x.rolled && (
+                  <span className="text-ink-caption" role="img" aria-label="rolled">
+                    {' '}
+                    🎲
+                  </span>
+                )}
+              </span>
+              {removingId === x.id ? (
+                <span className="flex shrink-0 items-center gap-4">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onChange(extras.filter((e) => e.id !== x.id))
+                      setRemovingId(null)
+                    }}
+                    className={`${tapClass} text-[13px] font-medium text-accent sm:text-[12px]`}
+                  >
+                    Confirm remove
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRemovingId(null)}
+                    className={`${tapClass} text-[13px] text-ink-caption sm:text-[12px]`}
+                  >
+                    Cancel
+                  </button>
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setRemovingId(x.id)}
+                  className={`${tapClass} shrink-0 text-[13px] text-ink-rose hover:text-accent sm:text-[12px]`}
+                >
+                  Remove
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {extras.length > RECENT_EXTRAS && (
+        <button
+          type="button"
+          onClick={() => setShowAll(!showAll)}
+          className={`${tapClass} mt-1 text-[13px] text-ink-rose hover:text-accent sm:text-[12px]`}
+        >
+          {showAll ? 'Show fewer' : `Show all ${extras.length}`}
+        </button>
+      )}
+    </section>
   )
 }
 
