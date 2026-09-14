@@ -1,10 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { SignedIn, SignedOut, SignInButton, UserButton, useUser } from '@clerk/clerk-react'
 import {
-  DEFAULT_ENVELOPES,
-  DEFAULT_FUNDS,
-  DEFAULT_PROFILE,
-  DEFAULT_ROLL_RANGE,
+  RETIRED_FUNDS,
   buildPaycheck,
   currency,
   effectiveTaxRate,
@@ -17,7 +14,6 @@ import {
   rollAmount,
   todayKey,
   typicalNet,
-  usePersistentState,
   type Envelope,
   type EnvelopeKind,
   type ExtraSaving,
@@ -27,6 +23,8 @@ import {
   type Profile,
   type RollRange,
 } from './lib/finance'
+import type { SyncStatus } from './lib/sync'
+import { useBudgetSync } from './lib/useBudgetSync'
 
 /* 16px on phones keeps iOS Safari from zooming the page on focus; min-h-11
    gives a 44px tap target. Both shrink back down at sm. */
@@ -58,15 +56,6 @@ const FUNDS_SLOT = 6
 /* Deep rose (the app accent) — validated visible on the tint surface and
    CVD-distinct from both donut neighbors (violet, blue). */
 const LEFTOVER_COLOR = '#c03760'
-
-/* Funds removed per Laken's Aug 8, 2026 email. The names still label older
-   checks in Paycheck History. */
-const RETIRED_FUNDS = new Map([
-  ['phone', 'New Phone'],
-  ['italy', 'Italy Plane Ticket'],
-  ['moveout', 'Move Out'],
-  ['band', 'Wedding Band'],
-])
 
 type Slice = { id: string; label: string; amount: number; color: string }
 
@@ -173,12 +162,18 @@ function Donut({ slices, centerLabel, centerValue }: { slices: Slice[]; centerLa
 }
 
 function App() {
-  const [profile, setProfile] = usePersistentState('pfd2:profile', DEFAULT_PROFILE)
-  const [envelopes, setEnvelopes] = usePersistentState<Envelope[]>('pfd2:envelopes', DEFAULT_ENVELOPES)
-  const [funds, setFunds] = usePersistentState<Fund[]>('pfd2:funds', DEFAULT_FUNDS)
-  const [paychecks, setPaychecks] = usePersistentState<Paycheck[]>('pfd2:paychecks', [])
-  const [extras, setExtras] = usePersistentState<ExtraSaving[]>('pfd2:extras', [])
-  const [rollRange, setRollRange] = usePersistentState<RollRange>('pfd2:rollRange', DEFAULT_ROLL_RANGE)
+  const sync = useBudgetSync()
+  const { profile, envelopes, funds, paychecks, extras, rollRange } = sync.data
+  /* Sep 14, 2026: six per-slice localStorage hooks became one synced budget.
+     Each setter swaps only its own slice through a functional update, so a
+     handler that calls several in a row (commitPaycheck, removePaycheck)
+     never overwrites a slice the previous call just wrote. */
+  const setProfile = (next: Profile) => sync.update((budget) => ({ ...budget, profile: next }))
+  const setEnvelopes = (next: Envelope[]) => sync.update((budget) => ({ ...budget, envelopes: next }))
+  const setFunds = (next: Fund[]) => sync.update((budget) => ({ ...budget, funds: next }))
+  const setPaychecks = (next: Paycheck[]) => sync.update((budget) => ({ ...budget, paychecks: next }))
+  const setExtras = (next: ExtraSaving[]) => sync.update((budget) => ({ ...budget, extras: next }))
+  const setRollRange = (next: RollRange) => sync.update((budget) => ({ ...budget, rollRange: next }))
   const [amountInput, setAmountInput] = useState('')
   const [hoursInput, setHoursInput] = useState('')
   const [dateInput, setDateInput] = useState(() => todayKey())
@@ -188,71 +183,6 @@ function App() {
   /* Set when the entry matches a check already logged; clears on any edit. */
   const [duplicateOf, setDuplicateOf] = useState<Paycheck | null>(null)
   const { user } = useUser()
-
-  /* One-time data migration (Aug 6, 2026): the Envelope Challenge's $613
-     moved into General (+313) and Wedding (+300); Laken Craft was never a
-     fund (it's her name on the spreadsheet). Idempotent — guarded on the
-     old records still existing. */
-  useEffect(() => {
-    let next = envelopes
-    if (next.some((e) => e.id === 'challenge')) {
-      next = next
-        .filter((e) => e.id !== 'challenge')
-        .map((e) =>
-          e.id === 'general'
-            ? { ...e, balance: e.balance + 313 }
-            : e.id === 'wedding'
-              ? { ...e, balance: e.balance + 300 }
-              : e,
-        )
-    }
-    /* Aug 6, 2026: Giving renamed to Gifts and included in savings. Guarded on
-       the old flag so a later manual rename is never clobbered. */
-    if (next.some((e) => e.id === 'giving' && !e.countsAsSavings)) {
-      next = next.map((e) =>
-        e.id === 'giving' && !e.countsAsSavings ? { ...e, name: 'Gifts', countsAsSavings: true } : e,
-      )
-    }
-    let nextFunds = funds
-    if (nextFunds.some((f) => f.id === 'craft')) {
-      nextFunds = nextFunds.filter((f) => f.id !== 'craft')
-    }
-    /* Sep 14, 2026, from Laken's Aug 8 email: every fund goes except
-       Christmas. Money already set aside in a removed fund folds into
-       General Savings so her total doesn't drop. Guarded on the old ids. */
-    const retired = nextFunds.filter((f) => RETIRED_FUNDS.has(f.id))
-    if (retired.length > 0) {
-      const moved = retired.reduce((s, f) => s + f.current, 0)
-      nextFunds = nextFunds.filter((f) => !RETIRED_FUNDS.has(f.id))
-      if (moved > 0) {
-        next = next.map((e) => (e.id === 'general' ? { ...e, balance: e.balance + moved } : e))
-      }
-    }
-    /* Same email: Christmas 2026 is $1,000 by Dec 11, then Christmas 2027
-       collects $1,500 from Jan 8 to Dec 10, 2027. Guarded on the old
-       month-only deadline. The seeded $40/check goes back to auto so the
-       date sets the pace; any other override she chose stays. */
-    if (nextFunds.some((f) => f.id === 'christmas' && f.deadline?.length === 7)) {
-      nextFunds = nextFunds.map((f) =>
-        f.id === 'christmas'
-          ? {
-              ...f,
-              name: f.name === 'Christmas' ? 'Christmas 2026' : f.name,
-              target: 1000,
-              deadline: '2026-12-11',
-              perCheck: f.perCheck === 40 ? 0 : f.perCheck,
-            }
-          : f,
-      )
-      const christmas2027 = DEFAULT_FUNDS.find((f) => f.id === 'christmas-2027')
-      if (christmas2027 && !nextFunds.some((f) => f.id === christmas2027.id)) {
-        nextFunds = [...nextFunds, christmas2027]
-      }
-    }
-    if (next !== envelopes) setEnvelopes(next)
-    if (nextFunds !== funds) setFunds(nextFunds)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
 
   const now = new Date()
   const monthLabel = now.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
@@ -402,13 +332,14 @@ function App() {
     <div className="min-h-dvh bg-surface-base text-ink-body">
       <header className="border-b border-border-default">
         <div className="mx-auto flex max-w-[1200px] items-center justify-between gap-3 px-4 py-3 sm:px-6">
-          <h1 className="text-[16px] font-semibold text-ink-heading">Laken's Finance</h1>
-          <div className="flex items-center gap-3 sm:gap-4">
+          <h1 className="shrink-0 text-[16px] font-semibold text-ink-heading">Laken's Finance</h1>
+          <div className="flex min-w-0 items-center gap-3 sm:gap-4">
             {/* The hero card carries the month, so this detail line is desktop-only. */}
             <span className="hidden text-[12px] font-light tabular-nums text-ink-rose sm:inline">
               {monthLabel} · ${profile.hourlyRate}/hr · HYSA {profile.hysaApy}%
             </span>
             <SignedIn>
+              {sync.notMemberUserId === null && <SyncStatusLabel status={sync.status} />}
               <UserButton />
             </SignedIn>
           </div>
@@ -433,7 +364,22 @@ function App() {
       </SignedOut>
 
       <SignedIn>
+      {sync.notMemberUserId !== null ? (
+        <NotMemberPanel userId={sync.notMemberUserId} />
+      ) : (
       <main className="mx-auto max-w-[1200px] space-y-4 px-4 py-4 sm:px-6">
+        {sync.notice && (
+          <div className="flex items-center justify-between gap-3 rounded-apple border border-border-default bg-surface-tint px-4 py-2">
+            <p className="text-[13px] text-pretty text-ink-body">{sync.notice}</p>
+            <button
+              type="button"
+              onClick={sync.dismissNotice}
+              className={`${tapClass} shrink-0 text-[13px] text-ink-caption hover:text-accent`}
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
         <section className="rounded-apple border border-border-default bg-surface-tint p-5 sm:p-6">
           <p className="text-[14px] text-ink-rose">
             {greeting}, {firstName} 🌸
@@ -845,7 +791,38 @@ function App() {
           )}
         </details>
       </main>
+      )}
       </SignedIn>
+    </div>
+  )
+}
+
+const SYNC_LABELS: Record<SyncStatus, string> = {
+  saved: 'Saved',
+  saving: 'Saving…',
+  offline: 'Offline — saved on this device',
+  error: "Couldn't save — retrying",
+}
+
+/* Quiet on purpose: caption gray while the budget is safe in the cloud or on
+   its way, rose once it isn't. Phones hide the month line, so there the
+   status only appears when something hasn't reached the cloud yet. */
+function SyncStatusLabel({ status }: { status: SyncStatus }) {
+  const tone = status === 'offline' || status === 'error' ? 'text-ink-rose' : 'text-ink-caption'
+  const visibility = status === 'saved' ? 'hidden sm:inline' : 'min-w-0 truncate'
+  return <span className={`${visibility} text-[12px] font-light ${tone}`}>{SYNC_LABELS[status]}</span>
+}
+
+/* Shown in place of the dashboard when the server doesn't know this login.
+   Nothing is sent until Cooper adds the ID to budget_members. */
+function NotMemberPanel({ userId }: { userId: string }) {
+  return (
+    <div className="mx-auto max-w-sm px-6 py-24 text-center">
+      <p className="text-[21px] font-semibold text-pretty text-ink-heading">
+        This login isn't on the Lockridge budget yet.
+      </p>
+      <p className="mt-4 font-mono text-[14px] break-all text-ink-body select-all">{userId}</p>
+      <p className="mt-4 text-[14px] text-pretty text-ink-caption">Send this ID to Cooper.</p>
     </div>
   )
 }

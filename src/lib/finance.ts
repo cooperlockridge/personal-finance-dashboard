@@ -1,5 +1,3 @@
-import { useEffect, useState } from 'react'
-
 export type Profile = {
   hourlyRate: number
   typicalHours: number
@@ -88,6 +86,129 @@ export const DEFAULT_FUNDS: Fund[] = [
 ]
 
 export const DEFAULT_ROLL_RANGE: RollRange = { min: 5, max: 50 }
+
+/** Everything the app stores, as one document — the unit every device syncs. */
+export type BudgetData = {
+  profile: Profile
+  envelopes: Envelope[]
+  funds: Fund[]
+  paychecks: Paycheck[]
+  extras: ExtraSaving[]
+  rollRange: RollRange
+}
+
+export const DEFAULT_BUDGET: BudgetData = {
+  profile: DEFAULT_PROFILE,
+  envelopes: DEFAULT_ENVELOPES,
+  funds: DEFAULT_FUNDS,
+  paychecks: [],
+  extras: [],
+  rollRange: DEFAULT_ROLL_RANGE,
+}
+
+/* Funds removed per Laken's Aug 8, 2026 email. The names still label older
+   checks in Paycheck History. */
+export const RETIRED_FUNDS = new Map([
+  ['phone', 'New Phone'],
+  ['italy', 'Italy Plane Ticket'],
+  ['moveout', 'Move Out'],
+  ['band', 'Wedding Band'],
+])
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * The same shape check /api/budget runs before it accepts a save. A stored
+ * copy that fails it is treated as missing rather than rendered, since one
+ * bad slice would otherwise be pushed up and rejected on every retry.
+ */
+export function isBudgetData(value: unknown): value is BudgetData {
+  if (!isRecord(value)) return false
+  const { profile, envelopes, funds, paychecks, extras, rollRange } = value
+  return (
+    isRecord(profile) &&
+    Array.isArray(envelopes) &&
+    Array.isArray(funds) &&
+    Array.isArray(paychecks) &&
+    Array.isArray(extras) &&
+    isRecord(rollRange) &&
+    typeof rollRange.min === 'number' &&
+    typeof rollRange.max === 'number'
+  )
+}
+
+/**
+ * The one-time data migrations, run on whatever copy of the budget a device
+ * is about to show — its local cache on load, and every cloud copy it adopts.
+ * Moved out of App's mount effect on Sep 14, 2026 when the budget started
+ * syncing. Returns the same object when nothing changed: sync relies on that
+ * to know whether a migrated cloud copy has to be saved back.
+ */
+export function migrateBudget(data: BudgetData): BudgetData {
+  /* One-time data migration (Aug 6, 2026): the Envelope Challenge's $613
+     moved into General (+313) and Wedding (+300); Laken Craft was never a
+     fund (it's her name on the spreadsheet). Idempotent — guarded on the
+     old records still existing. */
+  let next = data.envelopes
+  if (next.some((e) => e.id === 'challenge')) {
+    next = next
+      .filter((e) => e.id !== 'challenge')
+      .map((e) =>
+        e.id === 'general'
+          ? { ...e, balance: e.balance + 313 }
+          : e.id === 'wedding'
+            ? { ...e, balance: e.balance + 300 }
+            : e,
+      )
+  }
+  /* Aug 6, 2026: Giving renamed to Gifts and included in savings. Guarded on
+     the old flag so a later manual rename is never clobbered. */
+  if (next.some((e) => e.id === 'giving' && !e.countsAsSavings)) {
+    next = next.map((e) =>
+      e.id === 'giving' && !e.countsAsSavings ? { ...e, name: 'Gifts', countsAsSavings: true } : e,
+    )
+  }
+  let nextFunds = data.funds
+  if (nextFunds.some((f) => f.id === 'craft')) {
+    nextFunds = nextFunds.filter((f) => f.id !== 'craft')
+  }
+  /* Sep 14, 2026, from Laken's Aug 8 email: every fund goes except
+     Christmas. Money already set aside in a removed fund folds into
+     General Savings so her total doesn't drop. Guarded on the old ids. */
+  const retired = nextFunds.filter((f) => RETIRED_FUNDS.has(f.id))
+  if (retired.length > 0) {
+    const moved = retired.reduce((s, f) => s + f.current, 0)
+    nextFunds = nextFunds.filter((f) => !RETIRED_FUNDS.has(f.id))
+    if (moved > 0) {
+      next = next.map((e) => (e.id === 'general' ? { ...e, balance: e.balance + moved } : e))
+    }
+  }
+  /* Same email: Christmas 2026 is $1,000 by Dec 11, then Christmas 2027
+     collects $1,500 from Jan 8 to Dec 10, 2027. Guarded on the old
+     month-only deadline. The seeded $40/check goes back to auto so the
+     date sets the pace; any other override she chose stays. */
+  if (nextFunds.some((f) => f.id === 'christmas' && f.deadline?.length === 7)) {
+    nextFunds = nextFunds.map((f) =>
+      f.id === 'christmas'
+        ? {
+            ...f,
+            name: f.name === 'Christmas' ? 'Christmas 2026' : f.name,
+            target: 1000,
+            deadline: '2026-12-11',
+            perCheck: f.perCheck === 40 ? 0 : f.perCheck,
+          }
+        : f,
+    )
+    const christmas2027 = DEFAULT_FUNDS.find((f) => f.id === 'christmas-2027')
+    if (christmas2027 && !nextFunds.some((f) => f.id === christmas2027.id)) {
+      nextFunds = [...nextFunds, christmas2027]
+    }
+  }
+  if (next === data.envelopes && nextFunds === data.funds) return data
+  return { ...data, envelopes: next, funds: nextFunds }
+}
 
 export function grossForCheck(profile: Profile, hours: number | null): number {
   return profile.hourlyRate * (hours ?? profile.typicalHours)
@@ -309,19 +430,4 @@ export function formatDay(value: string): string {
     'en-US',
     day ? { month: 'short', day: 'numeric', year: 'numeric' } : { month: 'short', year: 'numeric' },
   )
-}
-
-export function usePersistentState<T>(key: string, initial: T) {
-  const [value, setValue] = useState<T>(() => {
-    try {
-      const raw = localStorage.getItem(key)
-      return raw ? (JSON.parse(raw) as T) : initial
-    } catch {
-      return initial
-    }
-  })
-  useEffect(() => {
-    localStorage.setItem(key, JSON.stringify(value))
-  }, [key, value])
-  return [value, setValue] as const
 }
