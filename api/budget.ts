@@ -78,7 +78,12 @@ export async function handleBudget(request: Request, overrides: Partial<BudgetDe
     )
     /* The user id comes back so the not-a-member screen can show it. Cooper
        adds that id to budget_members, and nothing else is needed. */
-    if (members.length === 0) return json(403, { error: 'not_member', userId })
+    if (members.length === 0) {
+      /* Logged so Cooper can pull a new member's id from the Vercel logs
+         instead of waiting for it to be sent to him. */
+      console.warn('budget: not a member', userId)
+      return json(403, { error: 'not_member', userId })
+    }
     const budgetId = members[0].budget_id
 
     if (method === 'GET') {

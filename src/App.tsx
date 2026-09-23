@@ -364,10 +364,8 @@ function App() {
       </SignedOut>
 
       <SignedIn>
-      {sync.notMemberUserId !== null ? (
-        <NotMemberPanel userId={sync.notMemberUserId} />
-      ) : (
       <main className="mx-auto max-w-[1200px] space-y-4 px-4 py-4 sm:px-6">
+        {sync.notMemberUserId !== null && <NotMemberBanner userId={sync.notMemberUserId} />}
         {sync.notice && (
           <div className="flex items-center justify-between gap-3 rounded-apple border border-border-default bg-surface-tint px-4 py-2">
             <p className="text-[13px] text-pretty text-ink-body">{sync.notice}</p>
@@ -791,7 +789,6 @@ function App() {
           )}
         </details>
       </main>
-      )}
       </SignedIn>
     </div>
   )
@@ -813,16 +810,18 @@ function SyncStatusLabel({ status }: { status: SyncStatus }) {
   return <span className={`${visibility} text-[12px] font-light ${tone}`}>{SYNC_LABELS[status]}</span>
 }
 
-/* Shown in place of the dashboard when the server doesn't know this login.
-   Nothing is sent until Cooper adds the ID to budget_members. */
-function NotMemberPanel({ userId }: { userId: string }) {
+/* Shown above the dashboard when the server doesn't know this login. The
+   dashboard keeps working from this device's copy, and nothing is sent until
+   Cooper adds the ID to budget_members (Sep 23, 2026: it used to replace the
+   dashboard, which would have locked Laken out of her own numbers until her
+   ID was seeded). */
+function NotMemberBanner({ userId }: { userId: string }) {
   return (
-    <div className="mx-auto max-w-sm px-6 py-24 text-center">
-      <p className="text-[21px] font-semibold text-pretty text-ink-heading">
-        This login isn't on the Lockridge budget yet.
+    <div className="rounded-apple border border-border-default bg-surface-tint px-4 py-3">
+      <p className="text-[13px] text-pretty text-ink-body">
+        This login isn't on the Lockridge budget yet, so changes stay on this device. Send this ID to Cooper:
       </p>
-      <p className="mt-4 font-mono text-[14px] break-all text-ink-body select-all">{userId}</p>
-      <p className="mt-4 text-[14px] text-pretty text-ink-caption">Send this ID to Cooper.</p>
+      <p className="mt-1 font-mono text-[13px] break-all text-ink-body select-all">{userId}</p>
     </div>
   )
 }
