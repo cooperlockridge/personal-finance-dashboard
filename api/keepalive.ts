@@ -2,9 +2,11 @@ import { createHash, timingSafeEqual } from 'node:crypto'
 import { ConfigError, json, type Env, type FetchLike } from './_lib/http.js'
 import { createSupabase, defaultFetch, SupabaseError, supabaseConfigFromEnv } from './_lib/supabase.js'
 
-/* Free Supabase projects pause after about a week without traffic, and a
-   paused project would take the shared budget offline on every device. Vercel
-   Cron hits this once a day (see vercel.json) and it runs one tiny query. */
+/* Supabase evaluates low activity over a week; its guidance recommends a few
+   database requests per day. Vercel Hobby permits one daily cron invocation,
+   so run three bounded reads here. This reduces pause risk, but only a paid
+   Supabase plan guarantees protection from inactivity pausing. */
+const DAILY_READS = 3
 
 export type KeepaliveDeps = {
   env: Env
@@ -25,15 +27,22 @@ export async function handleKeepalive(request: Request, overrides: Partial<Keepa
   /* Vercel Cron sends "Authorization: Bearer <CRON_SECRET>" when the env var
      is set. With no secret configured the route stays shut rather than open. */
   if (!secret || !sameSecret(request.headers.get('authorization') ?? '', `Bearer ${secret}`)) {
+    console.warn('keepalive rejected', { reason: secret ? 'unauthorized' : 'missing_cron_secret' })
     return json(401, { error: 'unauthorized' })
   }
 
   try {
     const db = createSupabase(supabaseConfigFromEnv(env, overrides.fetch ?? defaultFetch))
-    await db.select('budgets?select=id&limit=1')
+    for (let read = 0; read < DAILY_READS; read++) {
+      await db.select('budgets?select=id&limit=1')
+    }
+    console.info('keepalive completed', { reads: DAILY_READS })
     return json(200, { ok: true })
   } catch (error) {
-    if (error instanceof SupabaseError) return json(502, { ok: false })
+    if (error instanceof SupabaseError) {
+      console.error('keepalive failed', { upstreamStatus: error.status })
+      return json(502, { ok: false })
+    }
     console.error(error instanceof ConfigError ? error.message : error)
     return json(500, { ok: false })
   }

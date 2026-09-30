@@ -34,13 +34,14 @@ afterAll(() => {
 })
 
 describe('GET /api/keepalive', () => {
-  test('the right cron secret runs one tiny query → 200', async () => {
+  test('the right cron secret runs three bounded reads → 200', async () => {
     const db = recorder()
     const response = await route.handleKeepalive(request('Bearer cron-secret-123'), { env: ENV, fetch: db.fetch })
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual({ ok: true })
 
-    expect(db.calls.length).toBe(1)
+    expect(db.calls.length).toBe(3)
+    expect(db.calls.every(call => call.url.href === db.calls[0].url.href && call.method === 'GET')).toBe(true)
     const [call] = db.calls
     expect(call.method).toBe('GET')
     expect(call.url.pathname).toBe('/rest/v1/budgets')
@@ -76,6 +77,21 @@ describe('GET /api/keepalive', () => {
       const response = await route.handleKeepalive(request('Bearer cron-secret-123'), { env: ENV, fetch: db.fetch })
       expect(response.status).toBe(502)
       expect(await response.json()).toEqual({ ok: false })
+      expect(db.calls.length).toBe(1)
+    } finally {
+      quiet.mockRestore()
+    }
+  })
+
+  test('a later failed read does not report success or continue querying', async () => {
+    const quiet = spyOn(console, 'error').mockImplementation(() => {})
+    let reads = 0
+    try {
+      const db = recorder(() => ++reads === 2 ? new Response('unavailable', { status: 503 }) : Response.json([]))
+      const response = await route.handleKeepalive(request('Bearer cron-secret-123'), { env: ENV, fetch: db.fetch })
+      expect(response.status).toBe(502)
+      expect(await response.json()).toEqual({ ok: false })
+      expect(db.calls.length).toBe(2)
     } finally {
       quiet.mockRestore()
     }
