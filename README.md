@@ -30,6 +30,25 @@ Then open the printed localhost URL in your browser.
 | `npm run build`   | Type-check and build     |
 | `npm run preview` | Preview the built app    |
 
+## Supabase keepalive
+
+Vercel Cron calls `/api/keepalive` once daily at noon UTC. On Hobby, execution
+can occur anywhere within that hour. Production must have `CRON_SECRET`,
+`SUPABASE_URL`, and `SUPABASE_SECRET_KEY`; Vercel supplies the existing cron
+secret in the Authorization header. Missing or incorrect authorization fails
+closed before any database request.
+
+An authorized invocation performs three sequential reads of at most one budget
+ID each. It never changes budget data or returns IDs. Any failed read makes the
+invocation fail. Server logs report `keepalive completed` with the read count,
+or `keepalive failed` with the upstream status.
+
+Supabase evaluates low activity over the previous week; a single daily read
+can still trigger a warning. Its [project pausing guidance](https://supabase.com/docs/guides/platform/free-project-pausing)
+says a few database requests each day are typically sufficient. This keepalive
+reduces risk; a paid plan is the guarantee against inactivity pausing. After
+deploying a change, check the next daily cron's status and Supabase request logs.
+
 ## Features
 
 - Weekly post-tax paycheck entry with a live allocation split
