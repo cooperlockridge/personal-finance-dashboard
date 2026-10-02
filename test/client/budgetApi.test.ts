@@ -70,11 +70,26 @@ describe('budget API client', () => {
     expect(sent).toHaveLength(2)
   })
 
-  test('no token means no request', async () => {
+  test('no token still asks, so the device cookie can answer for it', async () => {
     const { fetch, sent } = scriptedFetch([{ status: 200, body: cloudBody }])
+    const api = createBudgetApi({ fetch, getToken: recordingToken([null]).getToken })
+    expect((await api.load()).kind).toBe('ok')
+    expect(sent).toHaveLength(1)
+    expect('Authorization' in (sent[0].init.headers as Record<string, string>)).toBe(false)
+  })
+
+  test('no token and no cookie is an error after one retry', async () => {
+    const { fetch, sent } = scriptedFetch([{ status: 401 }, { status: 401 }])
     const api = createBudgetApi({ fetch, getToken: recordingToken([null, null]).getToken })
     expect(await api.load()).toEqual({ kind: 'failed', failure: 'error' })
-    expect(sent).toHaveLength(0)
+    expect(sent).toHaveLength(2)
+  })
+
+  test('a token Clerk could not mint falls back to the cookie', async () => {
+    const { fetch, sent } = scriptedFetch([{ status: 200, body: cloudBody }])
+    const api = createBudgetApi({ fetch, getToken: async () => { throw new Error('clerk unreachable') } })
+    expect((await api.load()).kind).toBe('ok')
+    expect(sent).toHaveLength(1)
   })
 
   test('403 not_member carries the user id', async () => {

@@ -30,6 +30,19 @@ Then open the printed localhost URL in your browser.
 | `npm run build`   | Type-check and build     |
 | `npm run preview` | Preview the built app    |
 
+## Staying signed in
+
+Clerk runs as a development instance here, and its session lasts a week at
+most. After one Clerk sign-in, `/api/device` sets a year-long `HttpOnly`
+cookie that `/api/budget` accepts in place of a Clerk token, so a device that
+has signed in once stays signed in. The cookie renews itself once it is 30
+days old, and the header's **Sign out** clears it.
+
+Production and Preview need `DEVICE_SESSION_SECRET` (32+ characters). Without
+it no cookie is issued and sign-in behaves as it did before. Changing the
+secret signs every device out; removing a row from `budget_members` locks that
+login out on its next request.
+
 ## Supabase keepalive
 
 Vercel Cron calls `/api/keepalive` once daily at noon UTC. On Hobby, execution

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { SignedIn, SignedOut, SignInButton, UserButton, useUser } from '@clerk/clerk-react'
+import { SignInButton, useUser } from '@clerk/clerk-react'
 import {
   RETIRED_FUNDS,
   buildPaycheck,
@@ -25,6 +25,7 @@ import {
 } from './lib/finance'
 import type { SyncStatus } from './lib/sync'
 import { useBudgetSync } from './lib/useBudgetSync'
+import { useSession } from './lib/useSession'
 
 /* 16px on phones keeps iOS Safari from zooming the page on focus; min-h-11
    gives a 44px tap target. Both shrink back down at sm. */
@@ -162,7 +163,9 @@ function Donut({ slices, centerLabel, centerValue }: { slices: Slice[]; centerLa
 }
 
 function App() {
-  const sync = useBudgetSync()
+  const session = useSession()
+  const signedIn = session.status === 'signedIn'
+  const sync = useBudgetSync({ signedIn, userId: session.userId, getToken: session.getToken })
   const { profile, envelopes, funds, paychecks, extras, rollRange } = sync.data
   /* Sep 14, 2026: six per-slice localStorage hooks became one synced budget.
      Each setter swaps only its own slice through a functional update, so a
@@ -190,7 +193,7 @@ function App() {
   const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
   const monthChecks = paychecks.filter((p) => p.date.startsWith(monthKey))
   const monthNet = monthChecks.reduce((s, p) => s + p.net, 0)
-  const firstName = user?.firstName ?? 'Laken'
+  const firstName = user?.firstName ?? session.name ?? 'Laken'
   const hour = now.getHours()
   const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening'
 
@@ -338,15 +341,26 @@ function App() {
             <span className="hidden text-[12px] font-light tabular-nums text-ink-rose sm:inline">
               {monthLabel} · ${profile.hourlyRate}/hr · HYSA {profile.hysaApy}%
             </span>
-            <SignedIn>
-              {sync.notMemberUserId === null && <SyncStatusLabel status={sync.status} />}
-              <UserButton />
-            </SignedIn>
+            {signedIn && (
+              <>
+                {sync.notMemberUserId === null && <SyncStatusLabel status={sync.status} />}
+                {/* Oct 2, 2026: Clerk's avatar menu gave way to this. Its own
+                    sign-out would leave the device cookie behind, and she
+                    would still be signed in. */}
+                <button
+                  type="button"
+                  onClick={() => void session.signOut()}
+                  className={`${tapClass} shrink-0 text-[12px] text-ink-caption hover:text-ink-heading`}
+                >
+                  Sign out
+                </button>
+              </>
+            )}
           </div>
         </div>
       </header>
 
-      <SignedOut>
+      {session.status === 'signedOut' && (
         <div className="mx-auto max-w-sm px-6 py-24 text-center">
           <p className="text-[21px] font-semibold text-ink-heading">Hi, Laken 🌸</p>
           <p className="mt-2 text-[14px] text-pretty text-ink-caption">
@@ -361,9 +375,9 @@ function App() {
             </button>
           </SignInButton>
         </div>
-      </SignedOut>
+      )}
 
-      <SignedIn>
+      {signedIn && (
       <main className="mx-auto max-w-[1200px] space-y-4 px-4 py-4 sm:px-6">
         {sync.notMemberUserId !== null && <NotMemberBanner userId={sync.notMemberUserId} />}
         {sync.notice && (
@@ -789,7 +803,7 @@ function App() {
           )}
         </details>
       </main>
-      </SignedIn>
+      )}
     </div>
   )
 }

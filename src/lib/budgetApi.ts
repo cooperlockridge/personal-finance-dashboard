@@ -1,10 +1,10 @@
 import { isBudgetData, type BudgetData } from './finance'
 
 /* Sep 14, 2026: the browser's side of /api/budget. The server verifies the
-   Clerk session token, checks membership, and talks to Supabase; all this
-   file does is send the token, and turn each answer into one of a few
-   outcomes the sync engine can act on. No React and no window here, so the
-   mapping is tested in bun with a fake fetch. */
+   Clerk session token (or this device's cookie), checks membership, and talks
+   to Supabase; all this file does is send the token, and turn each answer
+   into one of a few outcomes the sync engine can act on. No React and no
+   window here, so the mapping is tested in bun with a fake fetch. */
 
 /** The shared budget as the server last saved it. `data` is null until the first device syncs. */
 export type CloudState = {
@@ -111,14 +111,17 @@ export function createBudgetApi({
   url?: string
 }): BudgetApi {
   async function attempt(method: string, payload: unknown, freshToken: boolean): Promise<Reply> {
+    /* No token is not the end of it (Oct 2, 2026): a device that has signed
+       in before carries a cookie from /api/device, which the browser attaches
+       on its own. So the request goes out either way, and a device with
+       neither gets the server's 401. If Clerk couldn't mint a token because
+       there is no connection, the fetch below fails too and reads as offline. */
     let token: string | null
     try {
       token = await (freshToken ? getToken({ skipCache: true }) : getToken())
     } catch {
-      /* Clerk couldn't mint a token, which on a phone almost always means no connection. */
-      return { status: 0, body: undefined }
+      token = null
     }
-    if (!token) return { status: 401, body: undefined }
     let response: Response
     try {
       response = await fetch(url, {
@@ -127,7 +130,7 @@ export function createBudgetApi({
         headers: {
           /* Asking for JSON keeps a dev server's HTML fallback from answering 200. */
           Accept: 'application/json',
-          Authorization: `Bearer ${token}`,
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
           ...(payload === undefined ? {} : { 'Content-Type': 'application/json' }),
         },
         body: payload === undefined ? undefined : JSON.stringify(payload),

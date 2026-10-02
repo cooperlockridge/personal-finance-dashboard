@@ -1,4 +1,5 @@
-import { ClerkAuthError, clerkConfigFromEnv, verifyClerkRequest, type ClerkUser } from './_lib/clerk.js'
+import { ClerkAuthError, type ClerkUser } from './_lib/clerk.js'
+import { DeviceAuthError, verifyRequest } from './_lib/device.js'
 import { ConfigError, json, type Env, type FetchLike } from './_lib/http.js'
 import {
   createSupabase,
@@ -15,8 +16,10 @@ import {
    PUT  { baseVersion, data }  → 200 { version } or 409 { error: 'stale', ...current }
    POST { reason, data }       → 201 {} (a snapshot; nothing a device held is lost)
 
-   Every request proves who it is with a Clerk session token, and the Clerk id
-   must be in budget_members. The browser never talks to Supabase itself. */
+   Every request proves who it is with a Clerk session token or, on a device
+   that has signed in before, the cookie /api/device issued (2026-10-02). Either
+   way the Clerk id must be in budget_members. The browser never talks to
+   Supabase itself. */
 
 /* A whole budget is a few kilobytes. A megabyte leaves years of paycheck
    history room while stopping anyone from parking junk in the database. */
@@ -56,7 +59,7 @@ export async function DELETE(request: Request): Promise<Response> {
   return handleBudget(request)
 }
 
-const defaultVerify = (request: Request, env: Env) => verifyClerkRequest(request, clerkConfigFromEnv(env))
+const defaultVerify = (request: Request, env: Env) => verifyRequest(request, env)
 
 /* Deps default to the real env, Clerk and Supabase. Tests pass their own so
    nothing here touches the network. */
@@ -110,7 +113,9 @@ export async function handleBudget(request: Request, overrides: Partial<BudgetDe
     await db.insert('budget_snapshots', { budget_id: budgetId, clerk_user_id: userId, reason, data })
     return json(201, {})
   } catch (error) {
-    if (error instanceof ClerkAuthError) return json(401, { error: 'unauthorized' })
+    if (error instanceof ClerkAuthError || error instanceof DeviceAuthError) {
+      return json(401, { error: 'unauthorized' })
+    }
     /* Already logged with detail inside the Supabase client. */
     if (error instanceof SupabaseError) return json(502, { error: 'upstream_error' })
     if (error instanceof ConfigError) {

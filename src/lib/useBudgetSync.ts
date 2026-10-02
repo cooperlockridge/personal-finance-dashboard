@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { useAuth } from '@clerk/clerk-react'
 import type { BudgetData } from './finance'
-import { createBudgetApi } from './budgetApi'
+import { createBudgetApi, type TokenGetter } from './budgetApi'
 import { createSyncEngine, type StorageLike, type SyncView } from './sync'
 
 export type BudgetSync = SyncView & {
@@ -21,12 +20,21 @@ function browserStorage(): StorageLike | null {
 /**
  * The shared budget for whoever is signed in. Renders from this device's
  * cache on the first frame and syncs in the background (Sep 14, 2026); see
- * createSyncEngine for the rules. Signed out, nothing is fetched.
+ * createSyncEngine for the rules. Signed out, nothing is fetched. Who is
+ * signed in comes from useSession, so a remembered device syncs the same way
+ * a Clerk session does.
  */
-export function useBudgetSync(): BudgetSync {
-  const { isSignedIn, userId, getToken } = useAuth()
-  /* The engine outlives renders, but Clerk may hand back a new getToken;
-     reading it through a ref keeps the engine on the current one. */
+export function useBudgetSync({
+  signedIn,
+  userId,
+  getToken,
+}: {
+  signedIn: boolean
+  userId: string | null
+  getToken: TokenGetter
+}): BudgetSync {
+  /* The engine outlives renders, but the session may hand back a new
+     getToken; reading it through a ref keeps the engine on the current one. */
   const tokenRef = useRef(getToken)
   useEffect(() => {
     tokenRef.current = getToken
@@ -44,7 +52,7 @@ export function useBudgetSync(): BudgetSync {
   const view = useSyncExternalStore(engine.subscribe, engine.getView)
 
   useEffect(() => {
-    if (!isSignedIn) return
+    if (!signedIn) return
     engine.start()
     const onFocus = () => engine.refresh()
     const onVisibility = () => {
@@ -57,7 +65,7 @@ export function useBudgetSync(): BudgetSync {
       document.removeEventListener('visibilitychange', onVisibility)
       engine.stop()
     }
-  }, [engine, isSignedIn, userId])
+  }, [engine, signedIn, userId])
 
   return { ...view, update: engine.update, dismissNotice: engine.dismissNotice }
 }
