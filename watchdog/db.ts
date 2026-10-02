@@ -266,12 +266,17 @@ export function createDb(runSql: RunSql) {
 const SQL_TIMEOUT_MS = 60_000
 
 /* The real road: `supabase db query --linked`, run from the main checkout
-   where the CLI is linked. It prints { "rows": [...] } on stdout; version
-   notices go to stderr and are ignored. The error carries the CLI's own words
-   and never the SQL, which holds the budget and what Laken wrote. */
+   where the CLI is linked. `-o json` is not optional: left to itself the CLI
+   draws a table, which is what it did on the first real run (Oct 2, 2026) —
+   every hand test before that had run inside a Claude session, where the CLI
+   notices an agent and switches to JSON on its own. With the flag it prints
+   a bare list of rows under launchd and { "rows": [...] } under an agent, so
+   both are read. Version notices go to stderr and are ignored. The error
+   carries the CLI's own words and never the SQL, which holds the budget and
+   what Laken wrote. */
 export function supabaseRunSql(exec: Exec, mainRepo: string): RunSql {
   return async (sql) => {
-    const result = await exec('supabase', ['db', 'query', '--linked', '--workdir', mainRepo, sql], {
+    const result = await exec('supabase', ['db', 'query', '--linked', '--workdir', mainRepo, '-o', 'json', sql], {
       timeoutMs: SQL_TIMEOUT_MS,
     })
     if (result.timedOut) throw new Error('supabase db query timed out')
@@ -284,7 +289,11 @@ export function supabaseRunSql(exec: Exec, mainRepo: string): RunSql {
     } catch {
       throw new Error('supabase db query printed something that is not JSON')
     }
-    const rows = typeof parsed === 'object' && parsed !== null ? (parsed as Row).rows : undefined
+    const rows = Array.isArray(parsed)
+      ? parsed
+      : typeof parsed === 'object' && parsed !== null
+        ? (parsed as Row).rows
+        : undefined
     if (!Array.isArray(rows) || rows.some((row) => typeof row !== 'object' || row === null || Array.isArray(row))) {
       throw new Error('supabase db query printed JSON without a rows list')
     }

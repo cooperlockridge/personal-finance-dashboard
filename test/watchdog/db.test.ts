@@ -266,10 +266,24 @@ describe('supabaseRunSql', () => {
     expect(calls).toEqual([
       {
         command: 'supabase',
-        args: ['db', 'query', '--linked', '--workdir', '/main/repo', `select ${HOSTILE_ESCAPED}`],
+        args: ['db', 'query', '--linked', '--workdir', '/main/repo', '-o', 'json', `select ${HOSTILE_ESCAPED}`],
         options: { timeoutMs: 60_000 },
       },
     ])
+  })
+
+  /* Under launchd the CLI prints a bare list; inside a Claude session it
+     wraps the same rows. The first real run met the first shape and every
+     test before it had only seen the second. */
+  test('reads the bare list the CLI prints outside an agent session', async () => {
+    const { exec } = fakeExec({ stdout: '[\n  { "id": 7, "status": "new" }\n]\n' })
+    expect(await supabaseRunSql(exec, '/main/repo')('select 1')).toEqual([{ id: 7, status: 'new' }])
+    expect(await supabaseRunSql(fakeExec({ stdout: '[]' }).exec, '/main/repo')('select 1')).toEqual([])
+  })
+
+  test('the table the CLI draws without -o json is refused, not misread', async () => {
+    const table = '┌─────┐\n│ one │\n├─────┤\n│ 1   │\n└─────┘\n'
+    await expect(supabaseRunSql(fakeExec({ stdout: table }).exec, '/main/repo')('select 1')).rejects.toThrow('not JSON')
   })
 
   test('throws on a non-zero exit, a timeout, or output that is not the rows JSON', async () => {
@@ -279,6 +293,7 @@ describe('supabaseRunSql', () => {
       { stdout: 'A new version is available\n{"rows":[]}' },
       { stdout: '{"boundary":"b"}' },
       { stdout: '{"rows":[1,2]}' },
+      { stdout: '[1,2]' },
       { stdout: '' },
     ]) {
       await expect(supabaseRunSql(fakeExec(result).exec, '/main/repo')('select 1')).rejects.toThrow()
