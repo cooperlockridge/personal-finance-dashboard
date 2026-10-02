@@ -5,6 +5,8 @@ import { createSyncEngine, type StorageLike, type SyncView } from './sync'
 
 export type BudgetSync = SyncView & {
   update(change: (data: BudgetData) => BudgetData): void
+  /** Re-read the cloud now. For when something other than this device changed the budget (Oct 2, 2026: undoing a request). */
+  refresh(): void
   dismissNotice(): void
 }
 
@@ -67,5 +69,5 @@ export function useBudgetSync({
     }
   }, [engine, signedIn, userId])
 
-  return { ...view, update: engine.update, dismissNotice: engine.dismissNotice }
+  return { ...view, update: engine.update, refresh: engine.refresh, dismissNotice: engine.dismissNotice }
 }

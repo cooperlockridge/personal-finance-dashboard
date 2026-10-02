@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.lockridge.finance-watchdog</string>
+
+  <!-- bash expands $HOME here. launchd itself expands nothing, which is why
+       the log paths below carry __HOME__ for install.sh to fill in. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-lc</string>
+    <string>"$HOME/.finance-watchdog/bootstrap.sh"</string>
+  </array>
+
+  <!-- A time of day, not an interval: once every morning at 6:30, and once
+       on wake if the Mac was asleep then. -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>6</integer>
+    <key>Minute</key>
+    <integer>30</integer>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <key>StandardOutPath</key>
+  <string>__HOME__/.finance-watchdog/logs/launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/.finance-watchdog/logs/launchd.log</string>
+</dict>
+</plist>

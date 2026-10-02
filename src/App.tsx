@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { SignInButton, useUser } from '@clerk/clerk-react'
 import {
   RETIRED_FUNDS,
@@ -23,6 +23,8 @@ import {
   type Profile,
   type RollRange,
 } from './lib/finance'
+import type { TokenGetter } from './lib/budgetApi'
+import { createRequestsApi, type BudgetRequest, type RequestStatus } from './lib/requestsApi'
 import type { SyncStatus } from './lib/sync'
 import { useBudgetSync } from './lib/useBudgetSync'
 import { useSession } from './lib/useSession'
@@ -774,6 +776,11 @@ function App() {
 
         </div>
 
+        {/* A login the server doesn't know can't file a request, so the card stays away. */}
+        {sync.notMemberUserId === null && (
+          <Requests getToken={session.getToken} onBudgetChanged={sync.refresh} />
+        )}
+
         <details className="rounded-apple border border-border-default p-4" open>
           <summary className="min-h-11 cursor-pointer text-[15px] font-medium text-ink-heading sm:min-h-0 sm:text-[14px]">
             Paycheck History
@@ -987,6 +994,282 @@ function PaycheckRow({
         </div>
       )}
     </li>
+  )
+}
+
+/* The word carries the state; rose only where she is the one being waited
+   on, or where it didn't happen. No chip, so the list stays quiet. */
+const REQUEST_STATUS: Record<RequestStatus, { label: string; tone: string }> = {
+  new: { label: 'Waiting', tone: 'text-ink-caption' },
+  in_progress: { label: 'Working on it', tone: 'text-ink-caption' },
+  needs_answer: { label: 'Needs your answer', tone: 'text-ink-rose' },
+  done: { label: 'Done', tone: 'text-ink-caption' },
+  blocked: { label: 'Not done', tone: 'text-ink-rose' },
+  undone: { label: 'Undone', tone: 'text-ink-caption' },
+}
+
+/* formatDay reads a bare date; a request carries a full timestamp, and the
+   day she sent it is the day on this device's clock. */
+function requestDay(timestamp: string): string {
+  const at = new Date(timestamp)
+  if (Number.isNaN(at.getTime())) return ''
+  return at.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+const SEND_FAILED = "Couldn't send — try again."
+
+/**
+ * Where Laken asks for a change in her own words (Oct 2, 2026). A job on
+ * Cooper's Mac picks each one up overnight and either changes her numbers,
+ * changes the app, asks her one question, or says why not. This card only
+ * files the request and shows what became of it; the server decides the rest.
+ */
+function Requests({ getToken, onBudgetChanged }: { getToken: TokenGetter; onBudgetChanged: () => void }) {
+  /* The client outlives renders, but the session may hand back a new
+     getToken; reading it through a ref keeps the client on the current one. */
+  const tokenRef = useRef(getToken)
+  useEffect(() => {
+    tokenRef.current = getToken
+  }, [getToken])
+  const [api] = useState(() =>
+    createRequestsApi({
+      fetch: (input, init) => fetch(input, init),
+      getToken: (options) => tokenRef.current(options),
+    }),
+  )
+  /* null until the first answer, so "Nothing yet" never flashes over a list
+     that is on its way. */
+  const [requests, setRequests] = useState<BudgetRequest[] | null>(null)
+  const [text, setText] = useState('')
+  const [sending, setSending] = useState(false)
+  const [sent, setSent] = useState(false)
+  const sentTimer = useRef<number | null>(null)
+  const [error, setError] = useState('')
+  const [answers, setAnswers] = useState<Record<number, string>>({})
+  const [undoingId, setUndoingId] = useState<number | null>(null)
+  /* The one row with a request out; its buttons wait for the answer. */
+  const [busyId, setBusyId] = useState<number | null>(null)
+  const [rowError, setRowError] = useState<{ id: number; text: string } | null>(null)
+
+  /* A list that didn't come keeps whatever is showing. The first time that
+     is the empty state with no error line: the local preview serves no /api,
+     and a phone with no signal has the header to say so. */
+  const load = useCallback(async () => {
+    const result = await api.list()
+    setRequests((known) => (result.kind === 'ok' ? result.requests : (known ?? [])))
+  }, [api])
+
+  useEffect(() => {
+    void load()
+    const onFocus = () => void load()
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [load])
+
+  useEffect(
+    () => () => {
+      if (sentTimer.current !== null) window.clearTimeout(sentTimer.current)
+    },
+    [],
+  )
+
+  const ready = text.trim() !== '' && !sending
+
+  async function send() {
+    if (!ready) return
+    setSending(true)
+    setError('')
+    const result = await api.submit(text.trim())
+    setSending(false)
+    if (result.kind !== 'ok') {
+      setError(result.kind === 'too_many_open' ? 'Five requests are already waiting.' : SEND_FAILED)
+      return
+    }
+    setText('')
+    setSent(true)
+    if (sentTimer.current !== null) window.clearTimeout(sentTimer.current)
+    sentTimer.current = window.setTimeout(() => setSent(false), 2000)
+    void load()
+  }
+
+  async function answer(id: number) {
+    const reply = (answers[id] ?? '').trim()
+    if (!reply || busyId !== null) return
+    setBusyId(id)
+    setRowError(null)
+    const result = await api.answer(id, reply)
+    setBusyId(null)
+    if (result.kind === 'failed') {
+      setRowError({ id, text: SEND_FAILED })
+      return
+    }
+    /* Answered, or no longer waiting on her; the fresh list shows which. */
+    setAnswers((all) => {
+      const rest = { ...all }
+      delete rest[id]
+      return rest
+    })
+    void load()
+  }
+
+  async function undo(id: number) {
+    setUndoingId(null)
+    if (busyId !== null) return
+    setBusyId(id)
+    setRowError(null)
+    const result = await api.undo(id)
+    setBusyId(null)
+    if (result.kind === 'failed') {
+      setRowError({ id, text: "Couldn't undo — try again." })
+      return
+    }
+    if (result.kind === 'cannot_undo') {
+      setRowError({ id, text: "The budget changed since then, so this can't be undone." })
+    } else {
+      onBudgetChanged()
+    }
+    void load()
+  }
+
+  return (
+    <section className="rounded-apple border border-border-default p-4">
+      <h2 className="text-[15px] font-medium text-ink-heading sm:text-[14px]">Requests</h2>
+      <textarea
+        rows={3}
+        aria-label="Describe a change"
+        placeholder="What should change?"
+        value={text}
+        onChange={(e) => {
+          setText(e.target.value)
+          setError('')
+        }}
+        className={`${inputClass} mt-3 block w-full`}
+      />
+      <div className="flex items-center justify-between gap-3">
+        <p className="min-w-0 text-[12px] text-pretty text-ink-rose">{error}</p>
+        <button
+          type="button"
+          onClick={() => void send()}
+          disabled={!ready}
+          className={`${tapClass} shrink-0 text-[13px] font-medium text-accent hover:text-accent-hover disabled:text-ink-caption`}
+        >
+          {sent && !ready ? 'Sent' : 'Send'}
+        </button>
+      </div>
+
+      {requests !== null && requests.length === 0 && (
+        <p className="mt-3 text-[13px] font-light text-pretty text-ink-caption">
+          Nothing yet. Describe a change and it gets done by tomorrow morning.
+        </p>
+      )}
+      {requests !== null && requests.length > 0 && (
+        <ul className="mt-3 divide-y divide-border-default">
+          {requests.map((request) => {
+            const status = REQUEST_STATUS[request.status]
+            const meta = [request.author, requestDay(request.createdAt)].filter(Boolean).join(' · ')
+            const settled = request.status === 'done' || request.status === 'blocked' || request.status === 'undone'
+            const busy = busyId === request.id
+            return (
+              <li key={request.id} className="py-2">
+                <div className="flex items-baseline justify-between gap-3">
+                  <p className="min-w-0 text-[14px] text-pretty break-words text-ink-body sm:text-[13px]">
+                    {request.body}
+                  </p>
+                  <span className={`shrink-0 text-[12px] ${status.tone}`}>{status.label}</span>
+                </div>
+                <p className="text-[12px] text-ink-caption">{meta}</p>
+
+                {request.status === 'needs_answer' && (
+                  <>
+                    {request.question && (
+                      <p className="mt-1 text-[13px] text-pretty text-ink-heading">{request.question}</p>
+                    )}
+                    <form
+                      className="mt-1 flex items-center gap-3"
+                      onSubmit={(e) => {
+                        e.preventDefault()
+                        void answer(request.id)
+                      }}
+                    >
+                      <input
+                        type="text"
+                        aria-label="Your answer"
+                        value={answers[request.id] ?? ''}
+                        onChange={(e) => setAnswers({ ...answers, [request.id]: e.target.value })}
+                        className={`${inputClass} min-w-0 flex-1`}
+                      />
+                      <button
+                        type="submit"
+                        disabled={busy || (answers[request.id] ?? '').trim() === ''}
+                        className={`${tapClass} shrink-0 text-[13px] font-medium text-accent hover:text-accent-hover disabled:text-ink-caption`}
+                      >
+                        Answer
+                      </button>
+                    </form>
+                  </>
+                )}
+
+                {settled && request.summary && (
+                  <p className="mt-1 text-[13px] text-pretty text-ink-body">{request.summary}</p>
+                )}
+
+                {request.changes && (
+                  <ul className="mt-1 space-y-0.5">
+                    {request.changes.map((change, index) => (
+                      <li
+                        key={index}
+                        className="flex flex-wrap items-baseline justify-between gap-x-3 text-[13px] sm:text-[12px]"
+                      >
+                        <span className="min-w-0 truncate text-ink-body">{change.label}</span>
+                        <span className="tabular-nums text-ink-caption">
+                          {change.before ?? '—'} → <span className="text-ink-heading">{change.after ?? '—'}</span>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                {request.canUndo && (
+                  <div className="flex flex-wrap items-center gap-x-4">
+                    {undoingId === request.id ? (
+                      <>
+                        <span className="text-[13px] text-ink-body">Undo this change?</span>
+                        <button
+                          type="button"
+                          onClick={() => void undo(request.id)}
+                          className={`${tapClass} text-[13px] font-medium text-accent`}
+                        >
+                          Yes, undo
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setUndoingId(null)}
+                          className={`${tapClass} text-[13px] text-ink-caption`}
+                        >
+                          Keep
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setUndoingId(request.id)}
+                        disabled={busy}
+                        className={`${tapClass} text-[13px] text-ink-caption hover:text-accent`}
+                      >
+                        Undo
+                      </button>
+                    )}
+                  </div>
+                )}
+                {rowError?.id === request.id && (
+                  <p className="mt-1 text-[12px] text-pretty text-ink-rose">{rowError.text}</p>
+                )}
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </section>
   )
 }
 

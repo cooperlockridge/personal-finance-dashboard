@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.watchdog.tsbuildinfo",
+    "target": "es2023",
+    "lib": ["ES2023"],
+    "types": ["node"],
+    "skipLibCheck": true,
+    "strict": true,
+
+    /* watchdog/ is run by bun straight from the .ts files and never built,
+       so its imports name the real files, .ts and all — the same way the
+       tests do. It reads BudgetData and isBudgetData from src/lib/finance.ts;
+       tsc follows that one import, so the file is checked here as well as
+       under tsconfig.app.json. */
+    "module": "nodenext",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+
+    /* Linting */
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  /* Tests live in test/watchdog and run under bun, whose bun:test types are
+     not installed, so tsc only checks the watchdog itself. */
+  "include": ["watchdog"]
+}

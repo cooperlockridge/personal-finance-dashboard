@@ -93,6 +93,11 @@ export function createSupabase(config: SupabaseConfig) {
     async insert(table: string, body: unknown): Promise<void> {
       await send('POST', table, { body, prefer: 'return=minimal' })
     },
+    /* For a caller that needs what the database filled in, such as a new
+       row's id. The path may carry ?select= to trim what comes back. */
+    async insertReturning<Row>(path: string, body: unknown): Promise<Row[]> {
+      return (await send<Row[]>('POST', path, { body, prefer: 'return=representation' })) ?? []
+    },
   }
 }
 

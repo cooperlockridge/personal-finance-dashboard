@@ -25,3 +25,6 @@ dist-ssr
 
 .vercel
 .env*
+
+# The watchdog agent's scratch folder: a copy of the live budget and its answer.
+.watchdog/
