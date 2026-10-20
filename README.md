@@ -43,6 +43,62 @@ it no cookie is issued and sign-in behaves as it did before. Changing the
 secret signs every device out; removing a row from `budget_members` locks that
 login out on its next request.
 
+## Use it from Claude (MCP connector)
+
+`/api/mcp` is a remote MCP server, so the whole dashboard works from a Claude
+chat: log a paycheck, check fund progress, move money, change settings.
+
+**Connect (once per Claude account):** in Claude, open Settings → Connectors →
+Add custom connector, name it `Laken's Finance`, and paste
+
+```
+https://personal-finance-dashboard-ashen.vercel.app/api/mcp
+```
+
+Claude opens the app's **Connect to Claude** screen. Sign in if asked, tap
+**Allow**, and the connector is ready on web, desktop and phone. Turn it on in a
+chat from the tools menu, then ask things like "I got paid $1,043.18 for 52
+hours today" or "how's the Christmas fund doing?".
+
+How it works:
+
+- OAuth 2.1 with PKCE and dynamic client registration, all stateless: client
+  ids, codes and tokens are HMAC-signed with a key derived from
+  `DEVICE_SESSION_SECRET` (`api/_lib/oauth.ts`). Codes only go back to
+  claude.ai, claude.com or loopback. Access tokens last a day and refresh for
+  180 days.
+- Approval happens in the app itself (`/?connect=…`, `src/ConnectClaude.tsx`),
+  so a remembered device needs no sign-in, and only a `budget_members` login
+  can approve.
+- Every tool reads and writes through the same `handleBudget` and
+  `handleRequests` the app uses (`api/_lib/budgetStore.ts`), so membership,
+  the shape check and the version-guarded save are shared. A save that loses a
+  race is redone on the fresh copy. The math is `src/lib/finance.ts`.
+- Removing a row from `budget_members` cuts that login's connector off on its
+  next call. Changing `DEVICE_SESSION_SECRET` disconnects every connector (and
+  signs out every device).
+
+Tools (`api/_lib/mcpTools.ts`, 36 in all): `get_overview`, `get_budget`, `get_settings`,
+`list_envelopes`, `list_funds`, `get_savings_breakdown`, `list_paychecks`,
+`get_paycheck`, `preview_paycheck`, `get_month_summary`, `compare_months`,
+`list_random_savings`, `roll_random_amount`, `plan_fund`, `add_paycheck`,
+`remove_paycheck`, `edit_paycheck`, `update_settings`, `set_roll_range`,
+`add_envelope`, `update_envelope`, `adjust_envelope`, `move_money`,
+`remove_envelope`, `add_fund`, `update_fund`, `adjust_fund`, `remove_fund`,
+`add_random_saving`, `remove_random_saving`, `list_requests`,
+`submit_request`, `answer_request`, `undo_request`.
+
+For everything else there is a catch-all: `get_budget_schema` explains every
+field of the budget document, and `patch_budget` edits it directly with JSON
+Patch operations against the version Claude read (`dryRun` previews the
+change). A patch is refused if the budget has moved on since that version, or
+if the result would break the app: `api/_lib/budgetSchema.ts` checks types,
+fields and duplicate ids, and only problems the patch itself adds count, so an
+old record never blocks an edit.
+
+To try it locally with the MCP Inspector (`npx @modelcontextprotocol/inspector`),
+point it at a deployed URL; `vite dev` does not serve `/api`.
+
 ## Supabase keepalive
 
 Vercel Cron calls `/api/keepalive` once daily at noon UTC. On Hobby, execution

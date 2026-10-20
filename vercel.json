@@ -3,5 +3,16 @@
   "framework": "vite",
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
-  "crons": [{ "path": "/api/keepalive", "schedule": "0 12 * * *" }]
+  "crons": [{ "path": "/api/keepalive", "schedule": "0 12 * * *" }],
+  "rewrites": [
+    { "source": "/.well-known/oauth-authorization-server", "destination": "/api/oauth?step=as-metadata" },
+    { "source": "/.well-known/oauth-authorization-server/:path*", "destination": "/api/oauth?step=as-metadata" },
+    { "source": "/.well-known/openid-configuration", "destination": "/api/oauth?step=as-metadata" },
+    { "source": "/.well-known/oauth-protected-resource", "destination": "/api/oauth?step=resource-metadata" },
+    { "source": "/.well-known/oauth-protected-resource/:path*", "destination": "/api/oauth?step=resource-metadata" },
+    { "source": "/oauth/register", "destination": "/api/oauth?step=register" },
+    { "source": "/oauth/authorize", "destination": "/api/oauth?step=authorize" },
+    { "source": "/oauth/token", "destination": "/api/oauth?step=token" },
+    { "source": "/mcp", "destination": "/api/mcp" }
+  ]
 }
