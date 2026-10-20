@@ -83,3 +83,87 @@
     animation: none !important;
   }
 }
+
+/* The site-down page (Oct 19, 2026), see src/SiteDown.tsx. Its own slate
+   palette instead of the app's pinks, in light and dark. */
+.sad-page {
+  --sad-bg: #e4e7eb;
+  --sad-bg-deep: #c9ced6;
+  --sad-ink: #3b4350;
+  --sad-muted: #7b8492;
+  --sad-rule: #c4cad3;
+  --sad-card: rgb(255 255 255 / 0.45);
+  --sad-drop: rgb(96 110 130 / 0.35);
+  --sad-dot: #8a94a3;
+  background: linear-gradient(180deg, var(--sad-bg-deep) 0%, var(--sad-bg) 60%);
+  color: var(--sad-ink);
+}
+
+@media (prefers-color-scheme: dark) {
+  .sad-page {
+    --sad-bg: #1a1d22;
+    --sad-bg-deep: #0f1114;
+    --sad-ink: #b7bec8;
+    --sad-muted: #6d7682;
+    --sad-rule: #2b3038;
+    --sad-card: rgb(255 255 255 / 0.04);
+    --sad-drop: rgb(150 165 185 / 0.25);
+    --sad-dot: #5a6370;
+  }
+}
+
+.sad-ink { color: var(--sad-ink); }
+.sad-muted { color: var(--sad-muted); }
+.sad-rule { border-color: var(--sad-rule); }
+.sad-card { background: var(--sad-card); border-color: var(--sad-rule); }
+
+.sad-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 9999px;
+  background: var(--sad-dot);
+  vertical-align: 1px;
+}
+
+.sad-drop {
+  position: absolute;
+  top: -30px;
+  width: 1px;
+  background: linear-gradient(transparent, var(--sad-drop));
+  animation: sad-fall linear infinite;
+}
+
+@keyframes sad-fall {
+  to { transform: translateY(110dvh); }
+}
+
+.sad-cloud {
+  font-size: 44px;
+  filter: grayscale(1);
+  opacity: 0.8;
+  animation: sad-drift 9s ease-in-out infinite alternate;
+}
+
+@keyframes sad-drift {
+  from { transform: translateX(-10px); }
+  to { transform: translateX(10px); }
+}
+
+/* Droops a little, then sags back. */
+.sad-flower {
+  filter: grayscale(0.85) brightness(0.9);
+  transform-origin: 50% 100%;
+  animation: sad-droop 6s ease-in-out infinite;
+}
+
+@keyframes sad-droop {
+  0%, 100% { transform: rotate(-4deg); }
+  50% { transform: rotate(-11deg) translateY(2px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sad-drop, .sad-cloud, .sad-flower { animation: none; }
+  .sad-drop { display: none; }
+}

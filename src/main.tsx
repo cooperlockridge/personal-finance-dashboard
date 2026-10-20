@@ -4,6 +4,8 @@ import { ClerkProvider } from '@clerk/clerk-react'
 import './index.css'
 import App from './App.tsx'
 import { ConnectClaude } from './ConnectClaude.tsx'
+import { SiteDown } from './SiteDown.tsx'
+import { SITE_DOWN } from './lib/siteStatus.ts'
 
 const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY
 
@@ -20,7 +22,9 @@ createRoot(document.getElementById('root')!).render(
       publishableKey={publishableKey}
       appearance={{ variables: { colorPrimary: '#c03760' } }}
     >
-      {connectRequest ? <ConnectClaude request={connectRequest} /> : <App />}
+      {/* The connect screen keeps working while the site is down, so Claude can
+          still sign in and hear the news from the connector. */}
+      {connectRequest ? <ConnectClaude request={connectRequest} /> : SITE_DOWN ? <SiteDown /> : <App />}
     </ClerkProvider>
   </StrictMode>,
 )

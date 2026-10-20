@@ -2,6 +2,7 @@ import { createBudgetStore, ToolError } from './_lib/budgetStore.js'
 import { ConfigError, json, type Env, type FetchLike } from './_lib/http.js'
 import { dayKey, easternNow, TOOLS, TOOLS_BY_NAME, type ToolContext } from './_lib/mcpTools.js'
 import { OAuthTokenError, oauthKeyFromEnv, originOf, verifyAccessToken } from './_lib/oauth.js'
+import { DOWN_MESSAGE, SITE_DOWN } from '../src/lib/siteStatus.js'
 
 /* /api/mcp — the budget as an MCP server, for Claude's custom connector
    (2026-10-19). Streamable HTTP, stateless: every POST carries one JSON-RPC
@@ -24,6 +25,30 @@ How the budget works: each post-tax paycheck is split by envelope rules (percent
 
 Use get_overview first for general questions. Before add_paycheck, it helps to show the split with preview_paycheck. Ask before anything destructive (removing a paycheck, envelope or fund) and before overriding the duplicate-paycheck guard. Changes save to the shared budget immediately and appear in the app the next time it is opened or focused. If no specific tool fits a budget change, use patch_budget (read get_budget_schema first) and do a dryRun before saving. For changes to how the app itself works, use submit_request to ask Cooper.`
 
+/* While the site is down (src/lib/siteStatus.ts) the connector still signs
+   in and answers, but it offers one tool that delivers the news, and every
+   budget tool Claude may still remember answers with the same news instead of
+   data. Nothing is read from or written to the budget. */
+const DOWN_INSTRUCTIONS = `${DOWN_MESSAGE}
+
+Laken's Finance is down indefinitely, and that includes this connector: no budget numbers can be read or changed. If she asks about her money, paychecks, envelopes, funds or savings, call get_site_status and tell her, gently, that the site is down with no date for coming back, and that nothing was deleted. Don't estimate or make up any figures, and don't offer workarounds. It's a sad thing; let it be sad.`
+
+const STATUS_TOOL = {
+  name: 'get_site_status',
+  title: 'Site status',
+  description: "Whether Laken's Finance is up. It is currently down indefinitely. Call this for any question about her budget, money, paychecks, envelopes, funds or savings, and relay what it says.",
+  inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  annotations: { title: 'Site status', readOnlyHint: true, openWorldHint: false },
+}
+
+const STATUS_RESULT = {
+  status: 'down',
+  since: '2026-10-19',
+  expectedBack: null,
+  dataDeleted: false,
+  message: DOWN_MESSAGE,
+}
+
 const MAX_BODY_BYTES = 256 * 1024
 
 const CORS = {
@@ -33,7 +58,7 @@ const CORS = {
   'access-control-expose-headers': 'www-authenticate, mcp-session-id',
 }
 
-export type McpDeps = { env: Env, fetch: FetchLike, now: () => number }
+export type McpDeps = { env: Env, fetch: FetchLike, now: () => number, siteDown: boolean }
 
 type JsonRpcMessage = { jsonrpc?: unknown, id?: unknown, method?: unknown, params?: unknown }
 
@@ -57,6 +82,7 @@ export async function handleMcp(request: Request, overrides: Partial<McpDeps> = 
   const method = request.method.toUpperCase()
   const env = overrides.env ?? process.env
   const now = overrides.now ?? Date.now
+  const siteDown = overrides.siteDown ?? SITE_DOWN
 
   if (method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS })
   /* No server-to-client stream and no sessions to end. */
@@ -97,7 +123,7 @@ export async function handleMcp(request: Request, overrides: Partial<McpDeps> = 
   if (messages.length === 0) return rpcHttpError(-32600, 'Empty batch')
   const replies = []
   for (const message of messages) {
-    const reply = await handleMessage(message as JsonRpcMessage, context)
+    const reply = await handleMessage(message as JsonRpcMessage, context, siteDown)
     if (reply) replies.push(reply)
   }
   /* Only notifications or responses: accepted, nothing to say. */
@@ -105,7 +131,7 @@ export async function handleMcp(request: Request, overrides: Partial<McpDeps> = 
   return json(200, Array.isArray(payload) ? replies : replies[0], CORS)
 }
 
-async function handleMessage(message: JsonRpcMessage, context: () => ToolContext) {
+async function handleMessage(message: JsonRpcMessage, context: () => ToolContext, siteDown: boolean) {
   if (typeof message !== 'object' || message === null || message.jsonrpc !== '2.0') {
     return rpcError(null, -32600, 'Invalid Request')
   }
@@ -126,12 +152,13 @@ async function handleMessage(message: JsonRpcMessage, context: () => ToolContext
         protocolVersion: PROTOCOL_VERSIONS.includes(asked) ? asked : PROTOCOL_VERSIONS[0],
         capabilities: { tools: { listChanged: false } },
         serverInfo: SERVER_INFO,
-        instructions: INSTRUCTIONS,
+        instructions: siteDown ? DOWN_INSTRUCTIONS : INSTRUCTIONS,
       })
     }
     case 'ping':
       return rpcResult(id, {})
     case 'tools/list':
+      if (siteDown) return rpcResult(id, { tools: [STATUS_TOOL] })
       return rpcResult(id, {
         tools: TOOLS.map(({ name, description, inputSchema, annotations }) => ({
           name,
@@ -142,6 +169,15 @@ async function handleMessage(message: JsonRpcMessage, context: () => ToolContext
         })),
       })
     case 'tools/call': {
+      if (siteDown) {
+        /* Any name, old or new: the answer is the same. */
+        const isStatus = params.name === STATUS_TOOL.name
+        return rpcResult(id, {
+          content: [{ type: 'text', text: isStatus ? JSON.stringify(STATUS_RESULT, null, 2) : DOWN_MESSAGE }],
+          ...(isStatus ? { structuredContent: STATUS_RESULT } : {}),
+          isError: !isStatus,
+        })
+      }
       const tool = typeof params.name === 'string' ? TOOLS_BY_NAME.get(params.name) : undefined
       if (!tool) return rpcError(id, -32602, `Unknown tool: ${String(params.name)}`)
       const args = (typeof params.arguments === 'object' && params.arguments !== null && !Array.isArray(params.arguments)
