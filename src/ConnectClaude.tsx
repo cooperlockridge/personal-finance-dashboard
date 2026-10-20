@@ -107,7 +107,13 @@ export function ConnectClaude({ request }: { request: string }) {
               {session.status === 'signedOut' && (
                 <div className="mt-5">
                   <p className="text-[13px] text-pretty text-ink-caption">Sign in first so Claude connects to your budget.</p>
-                  <SignInButton mode="modal">
+                  {/* A Google sign-in leaves the page; without these Clerk lands on /
+                      and the ?connect= link is lost (found testing, Oct 19, 2026). */}
+                  <SignInButton
+                    mode="modal"
+                    forceRedirectUrl={window.location.href}
+                    signUpForceRedirectUrl={window.location.href}
+                  >
                     <button type="button" className={`${buttonClass} mt-3 bg-pink text-ink-heading hover:bg-pink-hover`}>
                       Sign in
                     </button>
