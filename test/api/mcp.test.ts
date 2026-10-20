@@ -4,6 +4,7 @@ import { handleMcp } from '../../api/mcp.ts'
 import { handleOAuth } from '../../api/oauth.ts'
 import { DEFAULT_BUDGET, type BudgetData } from '../../src/lib/finance.ts'
 import { easternNow, TOOLS } from '../../api/_lib/mcpTools.ts'
+import { applyPatch } from '../../api/_lib/jsonPatch.ts'
 import { isAllowedRedirect, pkceMatches, signArtifact, oauthKeyFromEnv } from '../../api/_lib/oauth.ts'
 
 /* The Claude connector (2026-10-19): the OAuth dance in api/oauth.ts and the
@@ -413,5 +414,113 @@ describe('mcp tools', () => {
     const { body } = await rpc(fakeSupabase(), 'tools/call', { name: 'get_overview', arguments: {} }, accessToken('user_stranger'))
     expect(body.result.isError).toBe(true)
     expect(body.result.content[0].text).toContain('not on a budget')
+  })
+})
+
+describe('applyPatch', () => {
+  const doc = { list: [{ id: 'a' }, { id: 'b' }], n: 1 }
+
+  test('applies every op in order and never touches its input', () => {
+    const out = applyPatch(doc, [
+      { op: 'add', path: '/list/-', value: { id: 'c' } },
+      { op: 'replace', path: '/n', value: 2 },
+      { op: 'move', from: '/list/0', path: '/list/2' },
+      { op: 'copy', from: '/n', path: '/m' },
+      { op: 'test', path: '/list/0/id', value: 'b' },
+      { op: 'remove', path: '/list/1' },
+    ])
+    expect(out).toEqual({ list: [{ id: 'b' }, { id: 'a' }], n: 2, m: 2 })
+    expect(doc).toEqual({ list: [{ id: 'a' }, { id: 'b' }], n: 1 })
+  })
+
+  test('a failing op names itself and applies nothing', () => {
+    expect(() => applyPatch(doc, [{ op: 'replace', path: '/n', value: 5 }, { op: 'test', path: '/list/0/id', value: 'z' }])).toThrow('Operation 2')
+    expect(() => applyPatch(doc, [{ op: 'remove', path: '/list/7' }])).toThrow('out of range')
+    expect(() => applyPatch(doc, [{ op: 'replace', path: '', value: {} }])).toThrow('whole document')
+    expect(() => applyPatch(doc, [])).toThrow('non-empty')
+    expect(doc.n).toBe(1)
+  })
+})
+
+describe('patch_budget (catch-all)', () => {
+  test('a dry run describes the change and saves nothing', async () => {
+    const fake = fakeSupabase()
+    const { isError, data } = await call(fake, 'patch_budget', {
+      baseVersion: 7,
+      dryRun: true,
+      reason: 'rename and resize gifts',
+      operations: [
+        { op: 'test', path: '/envelopes/2/id', value: 'giving' },
+        { op: 'replace', path: '/envelopes/2/name', value: 'Gifts & Giving' },
+        { op: 'replace', path: '/envelopes/2/value', value: 6 },
+      ],
+    })
+    expect(isError).toBe(false)
+    expect(data.saved).toBe(false)
+    expect(data.changes).toContain('envelope "Gifts & Giving": name "Gifts" → "Gifts & Giving"')
+    expect(data.changes).toContain('envelope "Gifts & Giving": value 5 → 6')
+    expect(fake.state.puts).toBe(0)
+  })
+
+  test('saves against the version it was written for', async () => {
+    const fake = fakeSupabase()
+    const { isError, data } = await call(fake, 'patch_budget', {
+      baseVersion: 7,
+      operations: [{ op: 'add', path: '/funds/-', value: { id: 'italy-trip', name: 'Italy Trip', target: 1500, current: 0, deadline: '2027-08-01', perCheck: 0 } }],
+    })
+    expect(isError).toBe(false)
+    expect(data.version).toBe(8)
+    expect(data.changes).toEqual(['added fund "Italy Trip"'])
+    expect(saved(fake).funds.at(-1)!.id).toBe('italy-trip')
+  })
+
+  test('a stale version is refused, and is not retried on a race', async () => {
+    const fake = fakeSupabase()
+    const stale = await call(fake, 'patch_budget', { baseVersion: 6, operations: [{ op: 'replace', path: '/rollRange/max', value: 60 }] })
+    expect(stale.isError).toBe(true)
+    expect(stale.text).toContain('get_budget')
+    fake.state.raceNextSave = true
+    const raced = await call(fake, 'patch_budget', { baseVersion: 7, operations: [{ op: 'replace', path: '/rollRange/max', value: 60 }] })
+    expect(raced.isError).toBe(true)
+    expect(fake.state.puts).toBe(1)
+    expect(saved(fake).rollRange.max).toBe(50)
+  })
+
+  test('a patch that would break the app is refused with every reason', async () => {
+    const fake = fakeSupabase()
+    const bad = await call(fake, 'patch_budget', {
+      baseVersion: 7,
+      operations: [
+        { op: 'replace', path: '/envelopes/0/kind', value: 'percent' },
+        { op: 'replace', path: '/envelopes/1/id', value: 'wedding' },
+        { op: 'add', path: '/profile/nickname', value: 'L' },
+        { op: 'replace', path: '/funds/0/deadline', value: 'December' },
+      ],
+    })
+    expect(bad.isError).toBe(true)
+    for (const reason of ['/kind must be one of', 'used twice', 'Unknown field /profile/nickname', '/deadline must be']) {
+      expect(bad.text).toContain(reason)
+    }
+    expect(fake.state.puts).toBe(0)
+  })
+
+  test("an old record's existing problem never blocks an unrelated edit", async () => {
+    const budget = clone(DEFAULT_BUDGET)
+    /* A check from before gross was stored, as older records are. */
+    budget.paychecks = [{ id: 'old', date: '2026-08-07', net: 900, hours: null, grossEstimated: true, envelopeAmounts: {}, fundAmounts: {}, leftover: 900 } as never]
+    const fake = fakeSupabase(budget)
+    const result = await call(fake, 'patch_budget', {
+      baseVersion: 7,
+      operations: [
+        { op: 'add', path: '/extras/0', value: { id: 'x1', date: '2026-10-20', amount: 10, rolled: false } },
+        { op: 'add', path: '/paychecks/0', value: { id: 'new', date: '2026-10-23', net: 1000, hours: 50, gross: 1250, grossEstimated: false, envelopeAmounts: {}, fundAmounts: {}, leftover: 1000 } },
+      ],
+    })
+    expect(result.isError).toBe(false)
+  })
+
+  test('the schema guide is served', async () => {
+    const { data } = await call(fakeSupabase(), 'get_budget_schema')
+    expect(data.guide).toContain('percentGross')
   })
 })

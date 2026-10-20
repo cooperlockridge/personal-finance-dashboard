@@ -85,14 +85,24 @@ export function createBudgetStore(deps: StoreDeps) {
 
   /* `change` gets the current budget and returns the next one plus whatever
      the tool reports back. It may run more than once, so it must be pure. */
-  async function mutate<T>(change: (data: BudgetData) => { data: BudgetData, result: T }): Promise<T & { version: number }> {
+  /* With expectVersion the change only lands on exactly that version and is
+     never redone: the caller reasoned about that copy, so a newer one means
+     it has to look again. */
+  async function mutate<T>(
+    change: (data: BudgetData) => { data: BudgetData, result: T },
+    options: { expectVersion?: number } = {},
+  ): Promise<T & { version: number }> {
     let current = await read()
+    const stale = (version: number) =>
+      new ToolError(`The budget changed since version ${options.expectVersion} (it is now ${version}). Read it again with get_budget and rebuild the patch.`)
+    if (options.expectVersion !== undefined && current.version !== options.expectVersion) throw stale(current.version)
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       const { data, result } = change(current.data)
       const { status, body } = await call('/api/budget', 'PUT', { baseVersion: current.version, data })
       if (status === 200) return { ...result, version: Number(body.version) }
       if (status !== 409) failure(status, body)
       current = toSnapshot(body)
+      if (options.expectVersion !== undefined) throw stale(current.version)
     }
     throw new ToolError('The budget kept changing on another device while saving. Try again.')
   }

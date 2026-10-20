@@ -78,7 +78,7 @@ How it works:
   next call. Changing `DEVICE_SESSION_SECRET` disconnects every connector (and
   signs out every device).
 
-Tools (`api/_lib/mcpTools.ts`): `get_overview`, `get_budget`, `get_settings`,
+Tools (`api/_lib/mcpTools.ts`, 36 in all): `get_overview`, `get_budget`, `get_settings`,
 `list_envelopes`, `list_funds`, `get_savings_breakdown`, `list_paychecks`,
 `get_paycheck`, `preview_paycheck`, `get_month_summary`, `compare_months`,
 `list_random_savings`, `roll_random_amount`, `plan_fund`, `add_paycheck`,
@@ -87,6 +87,14 @@ Tools (`api/_lib/mcpTools.ts`): `get_overview`, `get_budget`, `get_settings`,
 `remove_envelope`, `add_fund`, `update_fund`, `adjust_fund`, `remove_fund`,
 `add_random_saving`, `remove_random_saving`, `list_requests`,
 `submit_request`, `answer_request`, `undo_request`.
+
+For everything else there is a catch-all: `get_budget_schema` explains every
+field of the budget document, and `patch_budget` edits it directly with JSON
+Patch operations against the version Claude read (`dryRun` previews the
+change). A patch is refused if the budget has moved on since that version, or
+if the result would break the app: `api/_lib/budgetSchema.ts` checks types,
+fields and duplicate ids, and only problems the patch itself adds count, so an
+old record never blocks an edit.
 
 To try it locally with the MCP Inspector (`npx @modelcontextprotocol/inspector`),
 point it at a deployed URL; `vite dev` does not serve `/api`.

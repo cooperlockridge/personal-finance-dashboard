@@ -22,7 +22,9 @@ import {
   type Paycheck,
   type Profile,
 } from '../../src/lib/finance.js'
+import { BUDGET_SCHEMA_GUIDE, budgetProblems } from './budgetSchema.js'
 import { ToolError, type BudgetStore } from './budgetStore.js'
+import { applyPatch, PatchError } from './jsonPatch.js'
 
 /* Every tool the Claude connector offers (2026-10-19). The goal is that
    anything the dashboard can show or change, Claude can too, using the same
@@ -500,6 +502,79 @@ function potBalance(data: BudgetData, pot: Pot): number | null {
   if (pot.kind === 'checking') return null
   if (pot.kind === 'envelope') return cents(data.envelopes.find((e) => e.id === pot.env.id)?.balance ?? 0)
   return cents(data.funds.find((f) => f.id === pot.fund.id)?.current ?? 0)
+}
+
+/* ---------- the catch-all patch ---------- */
+
+const LISTS = ['envelopes', 'funds', 'paychecks', 'extras']
+
+/* Problem messages name items by index, which shifts when an item is added
+   or removed. Keyed by id instead, an old record's old problem is
+   recognised as old wherever it moves. */
+function stableProblems(data: unknown): Map<string, string> {
+  const record = (data ?? {}) as Record<string, unknown>
+  const keyed = new Map<string, string>()
+  for (const message of budgetProblems(data)) {
+    const key = message.replace(/\/(envelopes|funds|paychecks|extras)\/(\d+)/, (whole, list: string, index: string) => {
+      const items = record[list]
+      const id = Array.isArray(items) ? (items[Number(index)] as { id?: unknown } | undefined)?.id : undefined
+      return typeof id === 'string' ? `/${list}#${id}` : whole
+    })
+    keyed.set(key, message)
+  }
+  return keyed
+}
+
+/* A short, readable list of what a patch changed, by item name. */
+function describeChanges(before: BudgetData, after: BudgetData): string[] {
+  const lines: string[] = []
+  const label = (list: string, item: Record<string, unknown>) =>
+    `${list.slice(0, -1)} "${String(item.name ?? item.date ?? item.id)}"`
+  const show = (value: unknown) => JSON.stringify(value) ?? '(none)'
+  for (const list of LISTS) {
+    const items = (doc: BudgetData) => (doc as Record<string, unknown>)[list] as Record<string, unknown>[]
+    const was = new Map(items(before).map((x) => [x.id, x]))
+    const now = new Map(items(after).map((x) => [x.id, x]))
+    for (const [id, item] of now) {
+      const old = was.get(id)
+      if (!old) {
+        lines.push(`added ${label(list, item)}`)
+        continue
+      }
+      for (const field of new Set([...Object.keys(old), ...Object.keys(item)])) {
+        if (show(old[field]) !== show(item[field])) lines.push(`${label(list, item)}: ${field} ${show(old[field])} → ${show(item[field])}`)
+      }
+    }
+    for (const [id, item] of was) if (!now.has(id)) lines.push(`removed ${label(list, item)}`)
+    const order = (m: Map<unknown, unknown>) => [...m.keys()].filter((id) => was.has(id) && now.has(id)).join()
+    if (order(was) !== order(now)) lines.push(`reordered ${list}`)
+  }
+  for (const key of ['profile', 'rollRange'] as const) {
+    const old = before[key] as Record<string, unknown>
+    const now = after[key] as Record<string, unknown>
+    for (const field of new Set([...Object.keys(old), ...Object.keys(now)])) {
+      if (show(old[field]) !== show(now[field])) lines.push(`${key}.${field}: ${show(old[field])} → ${show(now[field])}`)
+    }
+  }
+  return lines
+}
+
+function checkedPatch(data: BudgetData, operations: unknown): { next: BudgetData, changes: string[] } {
+  let next: BudgetData
+  try {
+    next = applyPatch(data, operations)
+  } catch (error) {
+    if (error instanceof PatchError) throw new ToolError(`Patch not applied. ${error.message}`)
+    throw error
+  }
+  const before = stableProblems(data)
+  const introduced = [...stableProblems(next)].filter(([key]) => !before.has(key)).map(([, message]) => message)
+  if (introduced.length > 0) {
+    throw new ToolError(`Patch not applied: it would leave the budget in a shape the app cannot use.\n- ${introduced.slice(0, 15).join('\n- ')}\nSee get_budget_schema.`)
+  }
+  const changes = describeChanges(data, next)
+  if (changes.length === 0) throw new ToolError('Patch not applied: it changes nothing.')
+  return { next, changes }
 }
 
 /* ---------- the tools ---------- */
@@ -1226,6 +1301,59 @@ export const TOOLS: Tool[] = [
       if (status === 409) throw new ToolError('The budget changed since then, so this can no longer be undone.')
       if (status !== 200) ctx.store.failure(status, body)
       return { undone: true, id, version: body.version }
+    },
+  },
+  /* ===== Catch-all ===== */
+  {
+    name: 'get_budget_schema',
+    description: 'Explains every field of the budget document and the rules that keep it consistent. Read this before patch_budget.',
+    inputSchema: object({}),
+    annotations: READ('Budget document schema'),
+    async run() {
+      return { guide: BUDGET_SCHEMA_GUIDE }
+    },
+  },
+  {
+    name: 'patch_budget',
+    description: 'Catch-all for anything the other tools do not cover: edits the budget document directly with JSON Patch (RFC 6902) operations. First call get_budget (for the data and its version) and get_budget_schema (for the rules), then send the operations with that version. Use dryRun=true to see exactly what would change, show her, then send again with dryRun=false. The patch is refused if the budget changed since that version, or if the result would break the app (wrong types, missing fields, duplicate ids). Raw edits do not move money automatically, so keep balances consistent yourself.',
+    inputSchema: object({
+      baseVersion: number('The version returned by get_budget that these operations were written against.'),
+      operations: {
+        type: 'array',
+        description: 'JSON Patch operations, applied in order. Paths are JSON Pointers into the budget document, e.g. /envelopes/2/name, /funds/-, /profile/hourlyRate.',
+        minItems: 1,
+        maxItems: 100,
+        items: {
+          type: 'object',
+          properties: {
+            op: { type: 'string', enum: ['add', 'remove', 'replace', 'move', 'copy', 'test'] },
+            path: { type: 'string' },
+            from: { type: 'string', description: 'Source path, for move and copy.' },
+            value: { description: 'The value, for add, replace and test.' },
+          },
+          required: ['op', 'path'],
+        },
+      },
+      reason: string('One line on what this change does, in plain words. Echoed back.'),
+      dryRun: boolean('true = validate and describe the change without saving. Default false.'),
+    }, ['baseVersion', 'operations']),
+    annotations: WRITE('Edit the budget directly', true),
+    async run(ctx, args) {
+      const baseVersion = Math.round(requiredNumber(args, 'baseVersion'))
+      const reason = optionalString(args, 'reason') ?? null
+      const dryRun = optionalBoolean(args, 'dryRun') ?? false
+      if (dryRun) {
+        const current = await ctx.store.read()
+        if (current.version !== baseVersion) {
+          throw new ToolError(`The budget changed since version ${baseVersion} (it is now ${current.version}). Read it again with get_budget and rebuild the patch.`)
+        }
+        const { next, changes } = checkedPatch(current.data, args.operations)
+        return { saved: false, dryRun: true, reason, changes, totalPutAwayBefore: savingsRows(current.data).total, totalPutAwayAfter: savingsRows(next).total }
+      }
+      return ctx.store.mutate((data) => {
+        const { next, changes } = checkedPatch(data, args.operations)
+        return { data: next, result: { saved: true, reason, changes, totalPutAwayBefore: savingsRows(data).total, totalPutAwayAfter: savingsRows(next).total } }
+      }, { expectVersion: baseVersion })
     },
   },
 ]
