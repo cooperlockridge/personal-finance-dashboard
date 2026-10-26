@@ -76,12 +76,12 @@ function accessToken(userId = 'user_laken', nowMs = NOW) {
   return signArtifact('access', { sub: userId, cid: 'test' }, key, nowMs, 3600)
 }
 
-async function rpc(fake: ReturnType<typeof fakeSupabase>, method: string, params: unknown = {}, token = accessToken(), siteDown = false) {
+async function rpc(fake: ReturnType<typeof fakeSupabase>, method: string, params: unknown = {}, token = accessToken()) {
   const response = await handleMcp(new Request(`${APP}/api/mcp`, {
     method: 'POST',
     headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-  }), { env: ENV, fetch: fake.fetch, now: () => NOW, siteDown })
+  }), { env: ENV, fetch: fake.fetch, now: () => NOW })
   return { status: response.status, body: await response.json() as Record<string, any> }
 }
 
@@ -522,38 +522,5 @@ describe('patch_budget (catch-all)', () => {
   test('the schema guide is served', async () => {
     const { data } = await call(fakeSupabase(), 'get_budget_schema')
     expect(data.guide).toContain('percentGross')
-  })
-})
-
-describe('while the site is down', () => {
-  test('the connector offers only the status tool and says so up front', async () => {
-    const fake = fakeSupabase()
-    const init = await rpc(fake, 'initialize', { protocolVersion: '2025-06-18' }, accessToken(), true)
-    expect(init.body.result.instructions).toContain('down indefinitely')
-    const list = await rpc(fake, 'tools/list', {}, accessToken(), true)
-    expect(list.body.result.tools.map((t: { name: string }) => t.name)).toEqual(['get_site_status'])
-  })
-
-  test('the status tool reports down with nothing deleted', async () => {
-    const { body } = await rpc(fakeSupabase(), 'tools/call', { name: 'get_site_status', arguments: {} }, accessToken(), true)
-    expect(body.result.isError).toBe(false)
-    expect(body.result.structuredContent).toMatchObject({ status: 'down', expectedBack: null, dataDeleted: false })
-  })
-
-  test('a remembered budget tool gets the news, and the budget is never touched', async () => {
-    const fake = fakeSupabase()
-    const before = JSON.stringify(fake.state.budget)
-    for (const name of ['get_overview', 'add_paycheck', 'patch_budget']) {
-      const { body } = await rpc(fake, 'tools/call', { name, arguments: { takeHome: 500 } }, accessToken(), true)
-      expect(body.result.isError).toBe(true)
-      expect(body.result.content[0].text).toContain('down indefinitely')
-    }
-    expect(fake.state.puts).toBe(0)
-    expect(JSON.stringify(fake.state.budget)).toBe(before)
-  })
-
-  test('signing in still works, so Claude can deliver the news', async () => {
-    const response = await handleMcp(new Request(`${APP}/api/mcp`, { method: 'POST', body: '{}' }), { env: ENV, now: () => NOW, siteDown: true })
-    expect(response.status).toBe(401)
   })
 })
